@@ -8,6 +8,21 @@ from app.core.db import get_call_members
 
 router = Router()
 
+async def safe_delete(msg: Message) -> None:
+    try:
+        await msg.delete()
+    except Exception:
+        # нема прав / вже видалено / інше — мовчки ігноруємо
+        pass
+
+
+def reply_target_id(message: Message) -> int | None:
+    # якщо команда написана реплаєм — відповідаємо на те повідомлення
+    if message.reply_to_message:
+        return message.reply_to_message.message_id
+    return None
+
+
 # Текст "заклику" — тільки емодзі
 EMOJI_POOL = ["🦊", "⚡️", "🔥", "🎯", "💀", "🧨", "🔪", "🛡️", "🎮", "👑", "🚨", "🔔", "💣", "🏴‍☠️", "🕶️"]
 
@@ -45,6 +60,7 @@ async def bot_can_delete(message: Message) -> bool:
 
 @router.message(Command("call"))
 async def call_handler(message: Message):
+    rt_id = reply_target_id(message)
     if not await ensure_group(message):
         return
 
@@ -58,11 +74,13 @@ async def call_handler(message: Message):
 
     for pack in packs:
         text = " ".join(pack)
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+        await message.answer(text, parse_mode="HTML", reply_to_message_id=rt_id, disable_web_page_preview=True)
+        await safe_delete(message)
 
 
 @router.message(Command("scall"))
 async def scall_handler(message: Message):
+    rt_id = reply_target_id(message)
     if not await ensure_group(message):
         return
 
@@ -79,11 +97,18 @@ async def scall_handler(message: Message):
     mentions = build_mentions(rows)
     packs = chunk(mentions, 5)
 
-    sent_messages = []
-    for pack in packs:
-        text = " ".join(pack)
-        m = await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-        sent_messages.append(m)
+sent_messages = []
+for pack in packs:
+    text = " ".join(pack)
+    m = await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_to_message_id=rt_id,
+        disable_web_page_preview=True
+    )
+    sent_messages.append(m)
+
+await safe_delete(message)
 
     # авто-видалення через 5 хв
     await asyncio.sleep(300)
