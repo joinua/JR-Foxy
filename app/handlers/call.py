@@ -15,9 +15,24 @@ CHUNK_SIZE = 5
 SCALL_TTL_SECONDS = 300  # 5 хв
 
 EMOJI_POOL = [
-    "🦊", "⚡️", "🔥", "🎯", "💀", "🧨", "🔪", "🛡️", "🎮",
-    "👑", "🚨", "🔔", "💣", "🏴‍☠️", "🕶️"
+    "🦊",
+    "⚡️",
+    "🔥",
+    "🎯",
+    "💀",
+    "🧨",
+    "🔪",
+    "🛡️",
+    "🎮",
+    "👑",
+    "🚨",
+    "🔔",
+    "💣",
+    "🏴‍☠️",
+    "🕶️",
 ]
+
+MemberRow = tuple[int, str | None]
 
 
 # ===== Хелпери =====
@@ -38,7 +53,7 @@ def random_emoji_one() -> str:
     return random.choice(EMOJI_POOL)
 
 
-def build_mentions(rows: list[tuple[int, str | None]]) -> list[str]:
+def build_mentions(rows: list[MemberRow]) -> list[str]:
     """HTML mention: емодзі з tg://user?id=..."""
     return [f'<a href="tg://user?id={user_id}">{random_emoji_one()}</a>' for user_id, _ in rows]
 
@@ -89,7 +104,11 @@ async def require_level_2_plus(message: Message) -> bool:
     return False
 
 
-async def send_call_messages(message: Message, rows: list[tuple[int, str | None]], rt_id: Optional[int]) -> list[Message]:
+async def send_call_messages(
+    message: Message,
+    rows: list[MemberRow],
+    rt_id: Optional[int],
+) -> list[Message]:
     """Надсилає серію повідомлень з меншнами, повертає список відправлених меседжів."""
     mentions = build_mentions(rows)
     packs = chunk(mentions, CHUNK_SIZE)

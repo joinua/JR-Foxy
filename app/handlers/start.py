@@ -4,8 +4,9 @@ from aiogram.types import Message
 
 router = Router()
 
+
 @router.message(CommandStart())
-async def start_handler(message: Message):
+async def start_handler(message: Message) -> None:
     await message.answer(
         "Привіт, я - JRツFoxy.\n"
         "Я помічничка клану JokerRecon CODM.\n"

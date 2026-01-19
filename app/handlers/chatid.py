@@ -4,8 +4,9 @@ from aiogram.types import Message
 
 router = Router()
 
+
 @router.message(Command("chatid"))
-async def chatid_handler(message: Message):
+async def chatid_handler(message: Message) -> None:
     # 1) Команда тільки для груп/супергруп
     if message.chat.type not in ("group", "supergroup"):
         await message.answer("Ця команда працює тільки в групових чатах, куди я додана.")

@@ -6,8 +6,9 @@ from app.core.db import upsert_call_member
 
 router = Router()
 
+
 @router.message()
-async def collect_member(message: Message):
+async def collect_member(message: Message) -> None:
     # Працюємо тільки в групах/супергрупах
     if message.chat.type not in ("group", "supergroup"):
         return
