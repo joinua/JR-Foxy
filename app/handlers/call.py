@@ -97,18 +97,18 @@ async def scall_handler(message: Message):
     mentions = build_mentions(rows)
     packs = chunk(mentions, 5)
 
-sent_messages = []
-for pack in packs:
-    text = " ".join(pack)
-    m = await message.answer(
-        text,
-        parse_mode="HTML",
-        reply_to_message_id=rt_id,
-        disable_web_page_preview=True
-    )
-    sent_messages.append(m)
+    sent_messages = []
+    for pack in packs:
+        text = " ".join(pack)
+        m = await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_to_message_id=rt_id,
+            disable_web_page_preview=True
+        )
+        sent_messages.append(m)
 
-await safe_delete(message)
+    await safe_delete(message)
 
     # авто-видалення через 5 хв
     await asyncio.sleep(300)
