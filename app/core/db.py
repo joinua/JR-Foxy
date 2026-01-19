@@ -1,13 +1,16 @@
-import aiosqlite
 from pathlib import Path
 
+import aiosqlite
+
 DB_PATH = Path("data") / "jrfoxy.db"
+
 
 async def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
+        await db.execute(
+            """
         CREATE TABLE IF NOT EXISTS call_members (
             user_id     INTEGER PRIMARY KEY,
             username    TEXT,
@@ -16,8 +19,10 @@ async def init_db() -> None:
             is_enabled  INTEGER NOT NULL DEFAULT 1,
             last_seen   INTEGER NOT NULL
         )
-        """)
+        """
+        )
         await db.commit()
+
 
 async def upsert_call_member(
     user_id: int,
@@ -27,18 +32,22 @@ async def upsert_call_member(
     last_seen: int,
 ) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-        INSERT INTO call_members (user_id, username, first_name, last_name, is_enabled, last_seen)
-        VALUES (?, ?, ?, ?, 1, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            username=excluded.username,
-            first_name=excluded.first_name,
-            last_name=excluded.last_name,
-            last_seen=excluded.last_seen
-        """, (user_id, username, first_name, last_name, last_seen))
+        await db.execute(
+            """
+            INSERT INTO call_members (user_id, username, first_name, last_name, is_enabled, last_seen)
+            VALUES (?, ?, ?, ?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username=excluded.username,
+                first_name=excluded.first_name,
+                last_name=excluded.last_name,
+                last_seen=excluded.last_seen
+            """,
+            (user_id, username, first_name, last_name, last_seen),
+        )
         await db.commit()
 
-async def get_call_members(limit: int | None = None):
+
+async def get_call_members(limit: int | None = None) -> list[tuple[int, str | None]]:
     async with aiosqlite.connect(DB_PATH) as db:
         query = """
         SELECT user_id, username
@@ -50,5 +59,4 @@ async def get_call_members(limit: int | None = None):
             query += f" LIMIT {limit}"
 
         cursor = await db.execute(query)
-        rows = await cursor.fetchall()
-        return rows
+        return await cursor.fetchall()

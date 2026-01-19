@@ -18,6 +18,7 @@ PINGS = [
     "Стабільна як твій нервовий зрив… жартую 😅",
 ]
 
+
 @router.message(Command("ping"))
-async def ping_handler(message: Message):
+async def ping_handler(message: Message) -> None:
     await message.answer(random.choice(PINGS))
