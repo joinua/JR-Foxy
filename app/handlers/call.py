@@ -186,3 +186,4 @@ async def scall_handler(message: Message) -> None:
             await m.delete()
         except Exception:
             pass
+# кінець
