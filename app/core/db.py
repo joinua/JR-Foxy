@@ -1,3 +1,5 @@
+"""Database helpers for the bot."""
+
 from pathlib import Path
 import time
 

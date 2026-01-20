@@ -1,3 +1,5 @@
+"""Admin command handlers."""
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -12,7 +14,7 @@ def is_private(message: Message) -> bool:
     return message.chat.type == "private"
 
 
-async def ensure_private(message: Message, *, myid: bool = False) -> bool:
+async def ensure_private(message: Message) -> bool:
     if is_private(message):
         return True
     await message.answer("Тільки в приваті.")
@@ -44,7 +46,7 @@ async def require_level(message: Message, min_level: int) -> bool:
 
 @router.message(Command("myid"))
 async def myid_handler(message: Message) -> None:
-    if not await ensure_private(message, myid=True):
+    if not await ensure_private(message):
         return
 
     await sync_owner_profile(message)
