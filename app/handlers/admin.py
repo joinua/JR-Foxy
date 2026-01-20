@@ -15,10 +15,7 @@ def is_private(message: Message) -> bool:
 async def ensure_private(message: Message, *, myid: bool = False) -> bool:
     if is_private(message):
         return True
-    if myid:
-        await message.answer("Only in private chat.")
-    else:
-        await message.answer("Тільки в приваті.")
+    await message.answer("Тільки в приваті.")
     return False
 
 
