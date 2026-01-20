@@ -6,7 +6,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.core.db import get_call_members
+from app.core.db import get_admin_level, get_call_members
 
 router = Router()
 
@@ -82,16 +82,14 @@ async def require_level_2_plus(message: Message) -> bool:
     Зараз fallback: дозволяємо лише адмінам/креатору чату.
     Потім заміниш на SQLite admin_levels без пошуку по всьому коду.
     """
-    # TODO: коли буде готово — реалізуй get_admin_level(user_id) у app.core.db і увімкни тут.
-    # try:
-    #     from app.core.db import get_admin_level
-    #     level = await get_admin_level(message.from_user.id)
-    #     if int(level) >= 2:
-    #         return True
-    #     await message.answer("Недостатньо прав. Потрібен рівень 2+.")
-    #     return False
-    # except Exception:
-    #     pass
+    try:
+        level = await get_admin_level(message.from_user.id)
+        if int(level) >= 2:
+            return True
+        await message.answer("Недостатньо прав. Потрібен рівень 2+.")
+        return False
+    except Exception:
+        pass
 
     try:
         cm = await message.bot.get_chat_member(message.chat.id, message.from_user.id)

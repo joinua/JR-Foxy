@@ -96,12 +96,11 @@ async def add_admin(
 
 
 async def set_admin_level(user_id: int, level: int) -> bool:
-    level = max(1, min(int(level), 4))
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "UPDATE admins SET level=?, updated_at=? WHERE user_id=?",
-            (level, now, user_id),
+            (int(level), now, user_id),
         )
         await db.commit()
         return cursor.rowcount > 0
