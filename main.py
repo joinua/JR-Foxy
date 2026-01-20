@@ -7,10 +7,6 @@ from app.handlers.chatid import router as chatid_router
 from app.handlers.collect_members import router as collect_router
 from app.handlers.ping import router as ping_router
 from app.handlers.start import router as start_router
-from app.core.db import ensure_admins_table
-await ensure_admins_table()
-
-
 ROUTERS = (
     start_router,
     chatid_router,
