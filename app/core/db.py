@@ -145,3 +145,24 @@ async def list_admins() -> list[tuple[int, str, str, str, int]]:
         )
         rows = await cursor.fetchall()
         return [(int(r[0]), r[1], r[2], r[3], int(r[4])) for r in rows]
+
+
+async def update_admin_profile(
+    user_id: int,
+    first_name: str,
+    last_name: str,
+    username: str,
+) -> bool:
+    now = int(time.time())
+    params = (first_name, last_name, username, now, user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            UPDATE admins
+            SET first_name=?, last_name=?, username=?, updated_at=?
+            WHERE user_id=?
+            """,
+            params,
+        )
+        await db.commit()
+        return cursor.rowcount > 0

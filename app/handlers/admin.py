@@ -5,7 +5,14 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.core.config import BOT_OWNER_ID
-from app.core.db import add_admin, delete_admin, get_admin_level, list_admins, set_admin_level
+from app.core.db import (
+    add_admin,
+    delete_admin,
+    get_admin_level,
+    list_admins,
+    set_admin_level,
+    update_admin_profile,
+)
 
 router = Router()
 
@@ -46,7 +53,8 @@ async def require_level(message: Message, min_level: int) -> bool:
 
 @router.message(Command("myid"))
 async def myid_handler(message: Message) -> None:
-    if not await ensure_private(message):
+    if not is_private(message):
+        await message.answer("Тільки в приваті.")
         return
 
     await sync_owner_profile(message)
@@ -54,6 +62,17 @@ async def myid_handler(message: Message) -> None:
     first_name = message.from_user.first_name if message.from_user else ""
     last_name = message.from_user.last_name if message.from_user else ""
     username = message.from_user.username if message.from_user else ""
+    if message.from_user:
+        level = await get_admin_level(message.from_user.id)
+        if level > 0:
+            normalized_username = username.lstrip("@") if username else ""
+            await update_admin_profile(
+                message.from_user.id,
+                first_name or "",
+                last_name or "",
+                normalized_username,
+            )
+            username = normalized_username
     name = " ".join(part for part in (first_name, last_name) if part).strip()
     if not name:
         name = "Без імені"
