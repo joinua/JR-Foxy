@@ -15,7 +15,7 @@ def is_private(message: Message) -> bool:
 async def ensure_private(message: Message, *, myid: bool = False) -> bool:
     if is_private(message):
         return True
-    await message.answer("Тільки в приваті.")
+    await message.answer("Ходи в приватні, пошалим там.")
     return False
 
 
