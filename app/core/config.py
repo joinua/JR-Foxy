@@ -17,3 +17,16 @@ try:
     BOT_OWNER_ID = int(BOT_OWNER_ID_RAW)
 except ValueError as exc:
     raise RuntimeError("BOT_OWNER_ID must be an integer") from exc
+
+ALLOWED_CHATS = {
+    -1003112818024: "Адміністрація JR",
+    -1002551613807: "JokerRecon (головний чат)",
+    -1003570487991: "Родина JR",
+    -1003696580089: "Офіцери JR",
+}
+
+WRONG_CHAT_TEXT = (
+    "Я не пристосована до цього чату.\n"
+    "Звернися до мого володаря @AlexRoshe і він розробить тобі подружку за адекватну ціну.\n"
+    "А я тільки належу до клану JokerRecon"
+)
