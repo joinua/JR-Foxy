@@ -35,6 +35,13 @@ async def init_db() -> None:
                 user_id INTEGER PRIMARY KEY,
                 first_joined_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS chat_settings (
+                chat_id     INTEGER NOT NULL,
+                key         TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                PRIMARY KEY (chat_id, key)
+            );
             """
         )
         await db.commit()
@@ -181,3 +188,28 @@ async def update_admin_profile(
         )
         await db.commit()
         return cursor.rowcount > 0
+
+async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO chat_settings (chat_id, key, value, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id, key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (chat_id, key, value, now),
+        )
+        await db.commit()
+
+
+async def get_chat_setting(chat_id: int, key: str) -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT value FROM chat_settings WHERE chat_id=? AND key=?",
+            (chat_id, key),
+        )
+        row = await cursor.fetchone()
+        return str(row[0]) if row else None
