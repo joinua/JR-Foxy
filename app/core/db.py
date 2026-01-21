@@ -31,7 +31,22 @@ async def init_db() -> None:
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS clan_members (
+                user_id INTEGER PRIMARY KEY,
+                first_joined_at INTEGER NOT NULL
+            );
             """
+        )
+        await db.commit()
+
+async def ensure_clan_member(user_id: int, joined_at: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO clan_members (user_id, first_joined_at)
+            VALUES (?, ?)
+            """,
+            (user_id, joined_at),
         )
         await db.commit()
 
