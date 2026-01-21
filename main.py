@@ -14,12 +14,13 @@ from app.handlers.collect_members import router as collect_router
 from app.handlers.ping import router as ping_router
 from app.handlers.start import router as start_router
 from app.handlers.welcome import router as welcome_router
-
+from app.handlers.predict import router as predict_router
 
 
 ROUTERS = (
     chat_guard_router,  # має бути першим
     welcome_router,
+    predict_router,
     start_router,
     chatid_router,
     ping_router,
