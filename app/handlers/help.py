@@ -48,6 +48,7 @@ async def help_handler(message: Message) -> None:
         for info in list_commands_exact_level(0)
         if scope_matches(info.scope, chat_type)
     ]
+    commands = sorted(commands)
     text = format_commands("Публічні команди:", commands)
     await message.answer(text)
 
@@ -84,5 +85,6 @@ async def help_level_handler(message: Message) -> None:
         f"/{info.command} - {info.description_ua}"
         for info in list_commands_exact_level(requested_level)
     ]
+    commands = sorted(commands)
     text = format_commands(f"Команди рівня {requested_level}:", commands)
     await message.answer(text)

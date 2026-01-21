@@ -25,7 +25,7 @@ def register_command(
 ) -> None:
     normalized = command.lstrip("/").strip().lower()
     for info in _registry:
-        if info.command == normalized and info.min_level == min_level:
+        if info.command == normalized:
             return
     _registry.append(CommandInfo(normalized, description_ua, min_level, scope))
 
