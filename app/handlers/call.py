@@ -6,9 +6,13 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.core.command_registry import register_command
 from app.core.db import get_admin_level, get_call_members
 
 router = Router()
+
+register_command("call", "Покликати учасників з бази (level 2+)", 2, "group")
+register_command("scall", "Покликати учасників з автоприбиранням (level 2+)", 2, "group")
 
 # ===== Налаштування =====
 CHUNK_SIZE = 5

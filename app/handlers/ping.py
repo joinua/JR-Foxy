@@ -3,7 +3,11 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.core.command_registry import register_command
+
 router = Router()
+
+register_command("ping", "Перевірити, чи бот онлайн", 0, "both")
 
 PINGS = [
     "Я тут. Не зламалась — просто красива 🦊",

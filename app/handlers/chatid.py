@@ -2,7 +2,11 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.core.command_registry import register_command
+
 router = Router()
+
+register_command("chatid", "Показати ID цього чату", 0, "group")
 
 
 @router.message(Command("chatid"))

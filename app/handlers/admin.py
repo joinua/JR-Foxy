@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.core.config import BOT_OWNER_ID
+from app.core.command_registry import register_command
 from app.core.db import (
     add_admin,
     delete_admin,
@@ -15,6 +16,12 @@ from app.core.db import (
 )
 
 router = Router()
+
+register_command("myid", "Показати свій ID", 0, "private")
+register_command("adda", "Додати адміна (level 4)", 4, "private")
+register_command("alvl", "Змінити рівень адміна (level 4)", 4, "private")
+register_command("dela", "Видалити адміна (level 4)", 4, "private")
+register_command("admlist", "Список адмінів (level 4)", 4, "private")
 
 
 def is_private(message: Message) -> bool:

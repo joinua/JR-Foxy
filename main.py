@@ -11,12 +11,14 @@ from app.handlers.admin import router as admin_router
 from app.handlers.call import router as call_router
 from app.handlers.chatid import router as chatid_router
 from app.handlers.collect_members import router as collect_router
+from app.handlers.help import router as help_router
 from app.handlers.ping import router as ping_router
 from app.handlers.start import router as start_router
 
 
 ROUTERS = (
     chat_guard_router,  # має бути першим
+    help_router,
     start_router,
     chatid_router,
     ping_router,
