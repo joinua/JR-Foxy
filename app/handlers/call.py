@@ -1,12 +1,16 @@
+"""Handlers for /call and /scall commands (mention members with emoji and optional TTL cleanup)."""
+
 import asyncio
 import random
 from typing import Optional
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.core.db import get_admin_level, get_call_members
+
 
 router = Router()
 
@@ -45,11 +49,12 @@ async def safe_delete(msg: Message) -> None:
     """Безпечно видалити повідомлення (без трейсбеків)."""
     try:
         await msg.delete()
-    except Exception:
+    except (TelegramBadRequest, TelegramForbiddenError):
         pass
 
 
 def random_emoji_one() -> str:
+    """Повертає випадкове емодзі з пулу."""
     return random.choice(EMOJI_POOL)
 
 
@@ -59,10 +64,12 @@ def build_mentions(rows: list[MemberRow]) -> list[str]:
 
 
 def chunk(lst: list[str], n: int) -> list[list[str]]:
+    """Розбиває список на підсписки заданого розміру."""
     return [lst[i:i + n] for i in range(0, len(lst), n)]
 
 
 async def ensure_group(message: Message) -> bool:
+    """Перевіряє, чи команда виконується в груповому чаті."""
     if message.chat.type not in ("group", "supergroup"):
         await message.answer("Ця команда працює тільки в групових чатах.")
         return False
@@ -88,14 +95,15 @@ async def require_level_2_plus(message: Message) -> bool:
             return True
         await message.answer("Недостатньо прав. Потрібен рівень 2+.")
         return False
-    except Exception:
+    except (TelegramBadRequest, TelegramForbiddenError):
         pass
+
 
     try:
         cm = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
         if cm.status in ("administrator", "creator"):
             return True
-    except Exception:
+    except (TelegramBadRequest, TelegramForbiddenError):
         pass
 
     await message.answer("Недостатньо прав. Потрібен модератор/адмін (level 2+).")
@@ -128,6 +136,7 @@ async def send_call_messages(
 # ===== Команди =====
 @router.message(Command("call"))
 async def call_handler(message: Message) -> None:
+    """Викликає учасників чату за допомогою емодзі-згадок."""
     rt_id = reply_target_id(message)
 
     if not await ensure_group(message):
@@ -139,11 +148,15 @@ async def call_handler(message: Message) -> None:
 
     rows = await get_call_members()
     if not rows:
-        await message.answer("Нема кого кликати. Нехай люди напишуть хоч одне повідомлення в чаті 🙂")
+        await message.answer("Нема кого кликати. Нехай люди напишуть хоч одне повідомлення тут 🙂")
         await safe_delete(message)  # команду все одно прибираємо
         return
 
-    await send_call_messages(message, rows, rt_id)
+    await send_call_messages(
+        message,
+        rows,
+        rt_id
+    )
 
     # Видаляємо саме повідомлення з /call (один раз, в кінці)
     await safe_delete(message)
@@ -151,6 +164,7 @@ async def call_handler(message: Message) -> None:
 
 @router.message(Command("scall"))
 async def scall_handler(message: Message) -> None:
+    """Викликає учасників і автоматично видаляє згадки через заданий час."""
     rt_id = reply_target_id(message)
 
     if not await ensure_group(message):
@@ -167,7 +181,7 @@ async def scall_handler(message: Message) -> None:
 
     rows = await get_call_members()
     if not rows:
-        await message.answer("Нема кого кликати. Нехай люди напишуть хоч одне повідомлення в чаті 🙂")
+        await message.answer("Нема кого кликати. Нехай люди напишуть хоч одне повідомлення тут 🙂")
         await safe_delete(message)
         return
 
@@ -182,6 +196,7 @@ async def scall_handler(message: Message) -> None:
     for m in sent_messages:
         try:
             await m.delete()
-        except Exception:
+        except (TelegramBadRequest, TelegramForbiddenError):
             pass
+
 # кінець

@@ -1,12 +1,23 @@
+"""Хендлер привітання та первинної взаємодії з новим користувачем."""
+
 import time
 
-from aiogram import Router, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-
-from app.core.db import ensure_clan_member, get_chat_setting, set_chat_setting
-from app.core.config import MAIN_CHAT_ID, BOT_OWNER_ID
-from app.core.db import get_admin_level
+from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID
+from app.core.db import (
+    ensure_clan_member,
+    get_admin_level,
+    get_chat_setting,
+    set_chat_setting,
+)
+
 
 router = Router()
 
@@ -15,14 +26,20 @@ RULES_URL = "https://teletype.in/@jokerrecon/OfRules"
 DEFAULT_WELCOME_HTML = (
     "{mention}, вітаю в клані!\n"
     "Сьогодні твій перший день в клані і тобі слід познайомитися з наступною інформацією:\n"
-    " - Ти потрапив(-ла) в основний чат, тут спілкуємося виключно про гру. Тут і оголошення і дуже корисна інформація. "
-    "За можливістю чат не глушимо, надоїдати не будемо. А для спілкування у нас є чат <b>Родини</b>, покликання знайдеш нижче;\n"
-    " - Вступаючи у клан ти уже погодився(-лася) з правилами клану. Тепер треба <b>ОБОВ'ЯЗКОВО</b> прочитати те, з чим ти погодився(-лася), "
+    " - Ти потрапив(-ла) в основний чат, тут спілкуємося виключно про гру."
+    "Тут і оголошення і дуже корисна інформація. "
+    "За можливістю чат не глушимо, надоїдати не будемо."
+    "А для спілкування у нас є чат <b>Родини</b>, покликання знайдеш нижче;\n"
+    " - Вступаючи у клан ти уже погодився(-лася) з правилами клану."
+    "Тепер треба <b>ОБОВ'ЯЗКОВО</b> прочитати те, з чим ти погодився(-лася), "
     "щоб не виникали потім \"нюанси\". Натисни на кнопку внизу і ретельно прочитай!;\n"
-    " - Щоб бути справді частиною клану треба поставити тег клану в початок свого ніку. Просто натисни один раз і він скопіюється: "
+    " - Щоб бути справді частиною клану треба поставити тег клану в початок свого ніку."
+    "Просто натисни один раз і він скопіюється: "
     "<code>JRツ</code>\n"
-    "Але обережно, не у всіх відображається цей смайлик. Чому? Питай в древніх старожилів цього чату...;\n"
-    " - Обовʼязково реагуємо (за можливості) на повідомлення де тебе згадали, ти можеш бути потрібен(-бна) комусь тут і зараз;\n"
+    "Але обережно, не у всіх відображається цей смайлик."
+    "Чому? Питай в древніх старожилів цього чату...;\n"
+    " - Обовʼязково реагуємо (за можливості) на повідомлення де тебе згадали,"
+    "ти можеш бути потрібен(-бна) комусь тут і зараз;\n"
     " - Пояснення назви клану можеш прочитати в кінці правил. Там і легенда, і саме пояснення;\n"
     " - Зі своїми функціями і чим я можу бути тобі корисна, дізнаєшся згодом.\n"
     "\n"
@@ -35,16 +52,26 @@ DEFAULT_WELCOME_HTML = (
 
 
 def mention_html(user) -> str:
-    # клікабельний тег без @username
+    """Повертає клікабельний HTML-меншн користувача за його ID."""
+
     name = (user.full_name or "боєць").replace("<", "").replace(">", "")
     return f'<a href="tg://user?id={user.id}">{name}</a>'
 
 
 @router.message(F.chat.id == MAIN_CHAT_ID, F.new_chat_members)
 async def on_new_members(message: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Правила клану", url=RULES_URL)]
-    ])
+    """Вітає нових учасників у головному чаті та зберігає дату входу."""
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="Правила клану",
+                url=RULES_URL,
+                )
+            ]
+        ]
+    )
 
     joined_at = int(time.time())
 
@@ -57,10 +84,17 @@ async def on_new_members(message: Message):
         template = custom or DEFAULT_WELCOME_HTML
         text = template.format(mention=mention_html(user))
 
-        await message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+        await message.answer(
+            text,
+            reply_markup=kb,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
 
 @router.message(F.chat.id == MAIN_CHAT_ID, Command("uploadwelcome"))
 async def upload_welcome(message: Message):
+    """Оновлює шаблон привітання (доступно власнику або адмінам 3+)."""
+
     # Доступ: власник або адмін 3-4
     uid = message.from_user.id if message.from_user else 0
     level = await get_admin_level(uid)
@@ -90,5 +124,9 @@ async def upload_welcome(message: Message):
         await message.answer("Додай у текст плейсхолдер {mention} (щоб я могла згадати новачка).")
         return
 
-    await set_chat_setting(MAIN_CHAT_ID, "welcome_html", new_template)
+    await set_chat_setting(
+        MAIN_CHAT_ID,
+        "welcome_html",
+        new_template,
+    )
     await message.answer("Вітальне повідомлення оновлено.")

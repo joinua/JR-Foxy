@@ -1,9 +1,13 @@
+"""Handler for /predict command (daily personal predictions)."""
+
 import json
 import random
 from datetime import datetime
+from json import JSONDecodeError
 from pathlib import Path
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -28,9 +32,10 @@ def _load_store() -> dict:
             return {}
         with STORE_PATH.open("r", encoding="utf-8") as f:
             return json.load(f) or {}
-    except Exception:
-        # якщо файл битий — починаємо з чистого
+    except (OSError, JSONDecodeError):
+        # файл відсутній, битий або немає доступу - починаємо з чистого
         return {}
+
 
 
 def _save_store(data: dict) -> None:
@@ -41,6 +46,8 @@ def _save_store(data: dict) -> None:
 
 @router.message(Command("predict"))
 async def predict_cmd(message: Message) -> None:
+    """Пишемо в рідному чаті та видаляємо команду"""
+
     # Дозволено лише в чаті "Родина JR"
     if message.chat.id != FAMILY_JR_CHAT_ID:
         return
@@ -48,8 +55,9 @@ async def predict_cmd(message: Message) -> None:
     # Видаляємо повідомлення з командою
     try:
         await message.delete()
-    except Exception:
+    except (TelegramBadRequest, TelegramForbiddenError):
         pass
+
 
     user = message.from_user
     if not user:
