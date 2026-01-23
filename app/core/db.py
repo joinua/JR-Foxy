@@ -9,6 +9,8 @@ DB_PATH = Path("data") / "jrfoxy.db"
 
 
 async def init_db() -> None:
+    """Ініціалізує базу даних та створює таблиці, якщо їх ще немає."""
+
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -46,7 +48,10 @@ async def init_db() -> None:
         )
         await db.commit()
 
+
 async def ensure_clan_member(user_id: int, joined_at: int) -> None:
+    """Гарантує наявність запису про першого вступу користувача до клану."""
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -65,10 +70,14 @@ async def upsert_call_member(
     last_name: str | None,
     last_seen: int,
 ) -> None:
+    """Додає або оновлює учасника для /call і фіксує час останньої активності."""
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO call_members (user_id, username, first_name, last_name, is_enabled, last_seen)
+            INSERT INTO call_members (
+                user_id, username, first_name, last_name, is_enabled, last_seen
+                )
             VALUES (?, ?, ?, ?, 1, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 username=excluded.username,
@@ -82,6 +91,8 @@ async def upsert_call_member(
 
 
 async def get_call_members(limit: int | None = None) -> list[tuple[int, str | None]]:
+    """Повертає список активних учасників для /call (за потреби з лімітом)."""
+
     async with aiosqlite.connect(DB_PATH) as db:
         query = """
         SELECT user_id, username
@@ -102,11 +113,15 @@ async def add_admin(
     last_name: str = "",
     username: str = "",
 ) -> None:
+    """Додає адміністратора або оновлює його профіль із рівнем за замовчуванням."""
+
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO admins (user_id, first_name, last_name, username, level, created_at, updated_at)
+            INSERT INTO admins (
+                user_id, first_name, last_name, username, level, created_at, updated_at
+                )
             VALUES (?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 first_name=excluded.first_name,
@@ -120,6 +135,8 @@ async def add_admin(
 
 
 async def set_admin_level(user_id: int, level: int) -> bool:
+    """Змінює рівень адміністратора та повертає True, якщо запис оновлено."""
+
     now = int(time.time())
     params = (int(level), now, user_id)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -132,6 +149,8 @@ async def set_admin_level(user_id: int, level: int) -> bool:
 
 
 async def delete_admin(user_id: int) -> bool:
+    """Видаляє адміністратора та повертає True, якщо запис існував."""
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "DELETE FROM admins WHERE user_id=?",
@@ -142,6 +161,8 @@ async def delete_admin(user_id: int) -> bool:
 
 
 async def get_admin_level(user_id: int) -> int:
+    """Повертає рівень адміністратора або 0, якщо його немає."""
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT level FROM admins WHERE user_id=?",
@@ -152,6 +173,8 @@ async def get_admin_level(user_id: int) -> int:
 
 
 async def list_admins() -> list[tuple[int, str, str, str, int]]:
+    """Повертає список адміністраторів, відсортований за рівнем."""
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
@@ -175,6 +198,8 @@ async def update_admin_profile(
     last_name: str,
     username: str,
 ) -> bool:
+    """Оновлює дані профілю адміністратора та повертає True при успіху."""
+
     now = int(time.time())
     params = (first_name, last_name, username, now, user_id)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -189,7 +214,14 @@ async def update_admin_profile(
         await db.commit()
         return cursor.rowcount > 0
 
-async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
+
+async def set_chat_setting(
+    chat_id: int,
+    key: str,
+    value: str
+    ) -> None:
+    """Зберігає або оновлює налаштування чату за ключем."""
+
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -206,6 +238,8 @@ async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
 
 
 async def get_chat_setting(chat_id: int, key: str) -> str | None:
+    """Повертає значення налаштування чату або None, якщо ключ відсутній."""
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT value FROM chat_settings WHERE chat_id=? AND key=?",

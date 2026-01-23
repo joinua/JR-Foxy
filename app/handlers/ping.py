@@ -1,3 +1,5 @@
+"""Перевірка роботоспосібності бота"""
+
 import random
 from aiogram import Router
 from aiogram.filters import Command
@@ -21,4 +23,6 @@ PINGS = [
 
 @router.message(Command("ping"))
 async def ping_handler(message: Message) -> None:
+    """Відповідь на запит до бота"""
+
     await message.answer(random.choice(PINGS))

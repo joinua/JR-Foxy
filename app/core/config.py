@@ -1,3 +1,5 @@
+"""Вписуємо які чати має слухати бот"""
+
 import os
 from dotenv import load_dotenv
 
