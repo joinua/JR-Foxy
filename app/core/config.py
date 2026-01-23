@@ -34,3 +34,13 @@ WRONG_CHAT_TEXT = (
 )
 
 MAIN_CHAT_ID = -1002551613807
+
+ADMIN_LOG_CHAT_ID_RAW = os.getenv("ADMIN_LOG_CHAT_ID")
+
+if not ADMIN_LOG_CHAT_ID_RAW:
+    raise RuntimeError("ADMIN_LOG_CHAT_ID not set in .env")
+
+try:
+    ADMIN_LOG_CHAT_ID = int(ADMIN_LOG_CHAT_ID_RAW)
+except ValueError as exc:
+    raise RuntimeError("ADMIN_LOG_CHAT_ID must be an integer") from exc

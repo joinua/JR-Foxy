@@ -44,6 +44,19 @@ async def init_db() -> None:
                 updated_at  INTEGER NOT NULL,
                 PRIMARY KEY (chat_id, key)
             );
+            CREATE TABLE IF NOT EXISTS warnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                issued_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                issued_by INTEGER NOT NULL,
+                issued_by_level INTEGER NOT NULL,
+                is_revoked INTEGER NOT NULL DEFAULT 0,
+                revoked_at INTEGER,
+                revoked_by INTEGER
+            );
             """
         )
         await db.commit()
