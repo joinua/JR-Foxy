@@ -1,230 +1,605 @@
-"""Warning command handlers."""
+"""Обробники команд попереджень із тонким шаром бізнес-логіки."""
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 import html
+import logging
+import re
+
 from aiogram import Router
 from aiogram.filters import Command, Text
 from aiogram.types import Message
 
 from app.core.config import ADMIN_LOG_CHAT_ID
+from app.core.dates import format_ua_date
 from app.core.db import get_admin_level
 from app.services.punishments import enforce_warning_ban
 from app.services.warnings import (
+    WarningRecord,
     build_mention,
     create_warning,
-    format_uk_date,
+    get_latest_active_warning,
     list_active_warnings,
     list_warning_history,
     revoke_latest_warning,
     warning_status_label,
 )
 
+logger = logging.getLogger(__name__)
 router = Router()
 
+_COMMAND_RE = re.compile(
+    r"^[!/]"  # префікс команди
+    r"(?P<name>\\w+)"  # назва команди
+    r"(?:@[A-Za-z0-9_]+)?"  # опційно bot username
+    r"(?:\\s+(?P<args>.*))?$"  # аргументи
+)
 
-async def _require_admin_level(message: Message, min_level: int) -> bool:
+
+@dataclass(frozen=True)
+class TargetUser:
+    """Результат резолву цілі для модерації.
+
+    Атрибути:
+        user_id: Ідентифікатор цілі в Telegram.
+        first_name: Ім'я цілі.
+        last_name: Прізвище цілі.
+        username_snapshot: Username на момент резолву (для snapshot-ів/логів).
+        is_bot: Ознака, що ціль є ботом.
+    """
+
+    user_id: int
+    first_name: str | None
+    last_name: str | None
+    username_snapshot: str | None
+    is_bot: bool
+
+
+def _chat_title(message: Message) -> str:
+    """Повертає безпечну для відображення назву чату."""
+
+    chat = message.chat
+    return (
+        chat.title
+        or getattr(chat, "full_name", None)
+        or chat.username
+        or str(chat.id)
+    )
+
+
+def _parse_command_args(message: Message, expected: str) -> list[str]:
+    """Парсить аргументи команди для префіксів `!` та `/`.
+
+    Параметри:
+        message: Вхідне повідомлення з командою.
+        expected: Очікувана назва команди без префікса.
+
+    Повертає:
+        Список токенів аргументів (без самої команди).
+    """
+
+    text = (message.text or "").strip()
+    match = _COMMAND_RE.match(text)
+    if not match or match.group("name").lower() != expected:
+        return []
+
+    args_text = (match.group("args") or "").strip()
+    return args_text.split() if args_text else []
+
+
+async def _safe_delete_message(message: Message) -> None:
+    """Безпечно видаляє повідомлення, ігноруючи помилки прав доступу."""
+
+    try:
+        await message.bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        return
+
+
+async def _delete_message_later(message: Message, delay_seconds: int) -> None:
+    """Планує видалення повідомлення через заданий час."""
+
+    await asyncio.sleep(delay_seconds)
+    await _safe_delete_message(message)
+
+
+async def _answer_with_optional_ttl(
+    message: Message,
+    text: str,
+    *,
+    ttl_seconds: int | None = None,
+) -> Message:
+    """Відповідає адміну та, за потреби, видаляє відповідь із затримкою.
+
+    Параметри:
+        message: Повідомлення з командою.
+        text: Текст відповіді.
+        ttl_seconds: Якщо задано, відповідь буде видалено через цей час.
+
+    Повертає:
+        Надіслане повідомлення-відповідь.
+    """
+
+    response = await message.answer(text, parse_mode="HTML")
+    if ttl_seconds is not None:
+        asyncio.create_task(_delete_message_later(response, ttl_seconds))
+    return response
+
+
+async def _delete_command_on_success(message: Message) -> None:
+    """Видаляє повідомлення-команду після успішної модераційної дії."""
+
+    await _safe_delete_message(message)
+
+
+async def _require_admin_level(
+    message: Message,
+    min_level: int,
+    error_text: str,
+) -> int | None:
+    """Перевіряє рівень доступу адміністратора.
+
+    Параметри:
+        message: Повідомлення з командою.
+        min_level: Мінімально необхідний рівень.
+        error_text: Текст помилки у випадку недостатніх прав.
+
+    Повертає:
+        Рівень адміністратора, якщо перевірка пройдена, інакше None.
+    """
+
     if not message.from_user:
-        await message.answer("Недостатній рівень.")
-        return False
+        return None
 
     level = await get_admin_level(message.from_user.id)
     if level < min_level:
-        await message.answer("Недостатній рівень.")
-        return False
-
-    return True
-
-
-def _extract_args(message: Message, command: str) -> list[str]:
-    text = message.text or ""
-    if not text.lower().startswith(command):
-        return []
-    raw = text[len(command):].strip()
-    return raw.split() if raw else []
-
-
-def _resolve_target_from_reply(message: Message) -> tuple[int | None, str | None, str | None]:
-    if message.reply_to_message and message.reply_to_message.from_user:
-        user = message.reply_to_message.from_user
-        return user.id, user.first_name, user.last_name
-    return None, None, None
-
-
-async def _resolve_target_by_username(message: Message, username: str) -> tuple[int, str | None, str | None] | None:
-    try:
-        chat = await message.bot.get_chat(username)
-    except Exception:
+        await _answer_with_optional_ttl(message, error_text)
         return None
 
-    first_name = getattr(chat, "first_name", None)
-    last_name = getattr(chat, "last_name", None)
-    return chat.id, first_name, last_name
+    return level
 
 
-@router.message(Text(startswith="!warn"))
-async def warn_handler(message: Message) -> None:
-    if not await _require_admin_level(message, 3):
-        return
+def _target_display_first_name(target: TargetUser) -> str | None:
+    """Повертає найкраще доступне ім'я для mention цілі."""
 
-    if not message.from_user:
-        return
+    if target.first_name:
+        return target.first_name
+    if target.username_snapshot:
+        return f"@{target.username_snapshot}"
+    return None
 
-    args = _extract_args(message, "!warn")
-    reply_user_id, reply_first_name, reply_last_name = _resolve_target_from_reply(message)
 
-    username_token = None
-    if args and args[0].startswith("@"):
-        username_token = args.pop(0)
+def _target_mention(target: TargetUser) -> str:
+    """Будує mention цілі з пріоритетом імені, а далі username snapshot."""
 
-    if reply_user_id is None:
-        if not username_token:
-            await message.answer("Вкажи користувача або відповідай на його повідомлення.")
-            return
-        resolved = await _resolve_target_by_username(message, username_token)
-        if not resolved:
-            await message.answer("Не вдалося знайти користувача.")
-            return
-        target_user_id, target_first_name, target_last_name = resolved
-    else:
-        target_user_id = reply_user_id
-        target_first_name = reply_first_name
-        target_last_name = reply_last_name
+    return build_mention(target.user_id, _target_display_first_name(target), target.last_name)
 
-    reason = " ".join(args).strip()
-    if not reason:
-        await message.answer("Вкажи причину попередження.")
-        return
 
-    admin_level = await get_admin_level(message.from_user.id)
-    warning, active_count = await create_warning(
-        user_id=target_user_id,
-        chat_id=message.chat.id,
-        reason=reason,
-        issued_by=message.from_user.id,
-        issued_by_level=admin_level,
+async def _resolve_target_user(message: Message, args: list[str]) -> tuple[TargetUser | None, str | None]:
+    """Резолвить ціль через reply або @username (reply має пріоритет).
+
+    Параметри:
+        message: Повідомлення з командою.
+        args: Список аргументів; може бути змінений (видалення @username).
+
+    Повертає:
+        Кортеж (ціль або None, код помилки або None).
+        Коди помилок: `no_target`, `username_not_found`.
+    """
+
+    if message.reply_to_message and message.reply_to_message.from_user:
+        if args and args[0].startswith("@"):
+            args.pop(0)
+        user = message.reply_to_message.from_user
+        return (
+            TargetUser(
+                user_id=user.id,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                username_snapshot=user.username,
+                is_bot=bool(user.is_bot),
+            ),
+            None,
+        )
+
+    if not args or not args[0].startswith("@"):
+        return None, "no_target"
+
+    username_token = args.pop(0)
+    try:
+        chat = await message.bot.get_chat(username_token)
+    except Exception:
+        return None, "username_not_found"
+
+    if getattr(chat, "type", None) != "private":
+        return None, "username_not_found"
+
+    return (
+        TargetUser(
+            user_id=chat.id,
+            first_name=getattr(chat, "first_name", None),
+            last_name=getattr(chat, "last_name", None),
+            username_snapshot=getattr(chat, "username", None),
+            is_bot=bool(getattr(chat, "is_bot", False)),
+        ),
+        None,
     )
 
-    await enforce_warning_ban(message.bot, message.chat.id, target_user_id, active_count)
 
-    member_mention = build_mention(target_user_id, target_first_name, target_last_name)
-    admin_mention = build_mention(
-        message.from_user.id,
-        message.from_user.first_name,
-        message.from_user.last_name,
+def _escape_reason(reason: str) -> str:
+    """Екранує причину попередження для HTML-повідомлень."""
+
+    return html.escape(reason)
+
+
+def _warning_line_with_expiry(warning: WarningRecord) -> str:
+    """Формує рядок активного попередження з датою завершення."""
+
+    return (
+        f"{format_ua_date(warning.issued_at)} > {_escape_reason(warning.reason)} "
+        f"(діє до {format_ua_date(warning.expires_at)})"
     )
-    formatted_expires = format_uk_date(warning.expires_at)
 
-    await message.answer(
+
+def _warning_line_with_status(warning: WarningRecord) -> str:
+    """Формує рядок історії попереджень з явним статусом."""
+
+    status = warning_status_label(warning)
+    return f"{format_ua_date(warning.issued_at)} > {_escape_reason(warning.reason)} [{status}]"
+
+
+async def _send_warn_log(
+    message: Message,
+    *,
+    target: TargetUser,
+    admin_level: int,
+    admin_mention: str,
+    user_mention: str,
+    reason: str,
+    expires_at: int,
+    active_count: int,
+) -> None:
+    """Надсилає деталізований WARN-запис до лог-чату."""
+
+    chat_title = html.escape(_chat_title(message))
+    await message.bot.send_message(
+        ADMIN_LOG_CHAT_ID,
         "\n".join(
             [
-                f"Учасник клану {member_mention} - отримав попередження!",
-                f" Адміністратор, що виніс попередження: {admin_mention}",
-                f" Причина: {html.escape(reason)}",
-                f" Діє до: {formatted_expires}",
+                f"WARN видано: {user_mention} ({target.user_id})",
+                f"Хто: {admin_mention} (lvl {admin_level})",
+                f"Де: {chat_title} ({message.chat.id})",
+                f"Причина: {_escape_reason(reason)}",
+                f"Діє до: {format_ua_date(expires_at)}",
+                f"Активних варнів тепер: {active_count}",
             ]
         ),
         parse_mode="HTML",
     )
 
 
-@router.message(Text(startswith="!unwarn"))
-async def unwarn_handler(message: Message) -> None:
-    if not await _require_admin_level(message, 3):
-        return
+async def _send_autoban_notifications(
+    message: Message,
+    *,
+    target: TargetUser,
+    user_mention: str,
+    admin_mention: str,
+) -> None:
+    """Надсилає повідомлення про автобан у лог-чат та публічно."""
+
+    chat_title = html.escape(_chat_title(message))
+    await message.bot.send_message(
+        ADMIN_LOG_CHAT_ID,
+        "\n".join(
+            [
+                f"Автобан: {user_mention} ({target.user_id})",
+                "Причина: 3 активних попередження",
+                f"Чат: {chat_title} ({message.chat.id})",
+                f"Останній варн видав: {admin_mention}",
+            ]
+        ),
+        parse_mode="HTML",
+    )
+
+    await message.answer(
+        "\n".join(
+            [
+                f"{user_mention} ({target.user_id}) покидає нас через систематичні порушення правил клану.",
+                "Адміністрація вживає заходів з його відлучення від кланової інфраструктури.",
+                "Не порушуйте!",
+            ]
+        ),
+        parse_mode="HTML",
+    )
+
+    logger.info(
+        "autoban notifications sent",
+        extra={
+            "user_id": target.user_id,
+            "admin_id": message.from_user.id if message.from_user else 0,
+            "chat_id": message.chat.id,
+        },
+    )
+
+
+@router.message(Command("warn"))
+@router.message(Text(regexp=r"^!warn(?:\s|$)"))
+async def warn_handler(message: Message) -> None:
+    """Видає попередження та, за потреби, тригерить автобан."""
 
     if not message.from_user:
         return
 
-    args = _extract_args(message, "!unwarn")
-    reply_user_id, reply_first_name, reply_last_name = _resolve_target_from_reply(message)
-
-    username_token = None
-    if args and args[0].startswith("@"):
-        username_token = args.pop(0)
-
-    if reply_user_id is None:
-        if not username_token:
-            await message.answer("Вкажи користувача або відповідай на його повідомлення.")
-            return
-        resolved = await _resolve_target_by_username(message, username_token)
-        if not resolved:
-            await message.answer("Не вдалося знайти користувача.")
-            return
-        target_user_id, target_first_name, target_last_name = resolved
-    else:
-        target_user_id = reply_user_id
-        target_first_name = reply_first_name
-        target_last_name = reply_last_name
-
-    revoked_warning, active_count = await revoke_latest_warning(
-        user_id=target_user_id,
-        revoked_by=message.from_user.id,
+    admin_level = await _require_admin_level(
+        message,
+        3,
+        "Недостатньо прав. Команда доступна адміністраторам з рівнем доступу 3+.",
     )
-
-    if not revoked_warning:
-        await message.answer("Немає активних попереджень для зняття.")
+    if admin_level is None:
         return
 
-    await enforce_warning_ban(message.bot, message.chat.id, target_user_id, active_count)
+    args = _parse_command_args(message, "warn")
+    target, error_code = await _resolve_target_user(message, args)
+    if error_code == "no_target":
+        await _answer_with_optional_ttl(
+            message,
+            "Вкажи гравця через @username або використай команду у відповідь на його повідомлення.",
+            ttl_seconds=60,
+        )
+        return
+    if error_code == "username_not_found":
+        await _answer_with_optional_ttl(
+            message,
+            "Не вдалося знайти користувача. Використай reply на його повідомлення.",
+        )
+        return
+    if not target:
+        return
 
-    member_mention = build_mention(target_user_id, target_first_name, target_last_name)
+    if target.user_id == message.from_user.id:
+        await _answer_with_optional_ttl(
+            message,
+            "У нас БДСМ не прийнято публічно висвітлювати. Лупцювати себе тут не вдасться.",
+        )
+        return
+
+    if target.is_bot or target.user_id == message.bot.id:
+        await _answer_with_optional_ttl(
+            message,
+            "Відколи бот у тебе порушник правил? Боту не можна видати попередження, а я тобі можу ахаха",
+        )
+        return
+
+    reason = " ".join(args).strip()
+    if not reason:
+        await _answer_with_optional_ttl(
+            message,
+            "Додай причину попередження. Приклад: /warn @username флуд",
+        )
+        return
+
+    warning, active_count = await create_warning(
+        user_id=target.user_id,
+        chat_id=message.chat.id,
+        reason=reason,
+        issued_by=message.from_user.id,
+        issued_by_level=admin_level,
+        user_username_snapshot=target.username_snapshot,
+        admin_username_snapshot=message.from_user.username,
+    )
+
+    user_mention = _target_mention(target)
+    admin_mention = build_mention(
+        message.from_user.id,
+        message.from_user.first_name,
+        message.from_user.last_name,
+    )
+
     await message.answer(
-        f"Знято останнє активне попередження з {member_mention}.",
+        "\n".join(
+            [
+                f"Учасник клану {user_mention} - отримав попередження!",
+                f"Адміністратор, що виніс попередження: {admin_mention}",
+                f"Причина: {_escape_reason(reason)}",
+                f"Діє до: {format_ua_date(warning.expires_at)}",
+            ]
+        ),
         parse_mode="HTML",
     )
 
+    await _send_warn_log(
+        message,
+        target=target,
+        admin_level=admin_level,
+        admin_mention=admin_mention,
+        user_mention=user_mention,
+        reason=reason,
+        expires_at=warning.expires_at,
+        active_count=active_count,
+    )
 
-@router.message(Command("winfo"))
-async def winfo_handler(message: Message) -> None:
-    if not await _require_admin_level(message, 1):
+    if active_count >= 3:
+        ban_triggered = await enforce_warning_ban(
+            message.bot,
+            message.chat.id,
+            target.user_id,
+            active_count,
+            admin_id=message.from_user.id,
+            warning_id=warning.id,
+        )
+        if ban_triggered:
+            await _send_autoban_notifications(
+                message,
+                target=target,
+                user_mention=user_mention,
+                admin_mention=admin_mention,
+            )
+
+    await _delete_command_on_success(message)
+
+
+@router.message(Command("unwarn"))
+@router.message(Text(regexp=r"^!unwarn(?:\s|$)"))
+async def unwarn_handler(message: Message) -> None:
+    """Скасовує останнє активне попередження без видалення історії."""
+
+    if not message.from_user:
         return
 
-    args = _extract_args(message, "/winfo")
-    reply_user_id, reply_first_name, reply_last_name = _resolve_target_from_reply(message)
+    admin_level = await _require_admin_level(
+        message,
+        3,
+        "Недостатньо прав. Команда доступна адміністраторам з рівнем доступу 3+.",
+    )
+    if admin_level is None:
+        return
 
-    username_token = None
-    if args and args[0].startswith("@"):
-        username_token = args.pop(0)
+    args = _parse_command_args(message, "unwarn")
+    target, error_code = await _resolve_target_user(message, args)
+    if error_code == "no_target":
+        await _answer_with_optional_ttl(
+            message,
+            "Вкажи гравця через @username або використай reply на його повідомлення.",
+        )
+        return
+    if error_code == "username_not_found":
+        await _answer_with_optional_ttl(
+            message,
+            "Не вдалося знайти користувача. Використай reply на його повідомлення.",
+        )
+        return
+    if not target:
+        return
 
-    if reply_user_id is None:
-        if not username_token:
-            await message.answer("Вкажи користувача або відповідай на його повідомлення.")
-            return
-        resolved = await _resolve_target_by_username(message, username_token)
-        if not resolved:
-            await message.answer("Не вдалося знайти користувача.")
-            return
-        target_user_id, target_first_name, target_last_name = resolved
-    else:
-        target_user_id = reply_user_id
-        target_first_name = reply_first_name
-        target_last_name = reply_last_name
+    if target.user_id == message.from_user.id:
+        await _answer_with_optional_ttl(
+            message,
+            "Тільки за рішенням суду. Дай номер ухвали і тоді я скасую твоє попередження.",
+        )
+        return
 
-    active_warnings = await list_active_warnings(target_user_id)
-    history_warnings = await list_warning_history(target_user_id)
+    if target.is_bot or target.user_id == message.bot.id:
+        await _answer_with_optional_ttl(
+            message,
+            "До бота попередження не застосовуються.",
+        )
+        return
 
-    target_mention = build_mention(target_user_id, target_first_name, target_last_name)
-    lines = [f"Попередження для {target_mention}:"]
+    revoked_warning, active_count = await revoke_latest_warning(
+        user_id=target.user_id,
+        revoked_by=message.from_user.id,
+    )
+
+    user_mention = _target_mention(target)
+    admin_mention = build_mention(
+        message.from_user.id,
+        message.from_user.first_name,
+        message.from_user.last_name,
+    )
+
+    if not revoked_warning:
+        await _answer_with_optional_ttl(
+            message,
+            f"{user_mention} не має активних попереджень. Нічого скасовувати.",
+        )
+        return
+
+    issued_at_line = f"{format_ua_date(revoked_warning.issued_at)} > {_escape_reason(revoked_warning.reason)}"
+    await message.answer(
+        "\n".join(
+            [
+                f"Попередження скасовано для {user_mention}.",
+                f"Скасував: {admin_mention}",
+                f"Скасоване попередження: {issued_at_line}",
+                f"Активних попереджень тепер: {active_count}",
+            ]
+        ),
+        parse_mode="HTML",
+    )
+
+    chat_title = html.escape(_chat_title(message))
+    await message.bot.send_message(
+        ADMIN_LOG_CHAT_ID,
+        "\n".join(
+            [
+                f"WARN скасовано: {user_mention} ({target.user_id})",
+                f"Хто: {admin_mention} (lvl {admin_level})",
+                f"Скасовано варн: {issued_at_line}",
+                f"Активних тепер: {active_count}",
+                f"Де: {chat_title} ({message.chat.id})",
+            ]
+        ),
+        parse_mode="HTML",
+    )
+
+    latest_active_warning = await get_latest_active_warning(target.user_id)
+    if active_count >= 3 and latest_active_warning:
+        await enforce_warning_ban(
+            message.bot,
+            message.chat.id,
+            target.user_id,
+            active_count,
+            admin_id=latest_active_warning.issued_by,
+            warning_id=latest_active_warning.id,
+        )
+
+    await _delete_command_on_success(message)
+
+
+@router.message(Command("winfo"))
+@router.message(Text(regexp=r"^!winfo(?:\s|$)"))
+async def winfo_handler(message: Message) -> None:
+    """Формує звіт про активні попередження та повну історію в лог-чат."""
+
+    if await _require_admin_level(
+        message,
+        1,
+        "Команда доступна лише адміністраторам.",
+    ) is None:
+        return
+
+    args = _parse_command_args(message, "winfo")
+    target, error_code = await _resolve_target_user(message, args)
+    if error_code == "no_target":
+        await _answer_with_optional_ttl(
+            message,
+            "Вкажи гравця через @username або використай reply на його повідомлення.",
+            ttl_seconds=60,
+        )
+        return
+    if error_code == "username_not_found":
+        await _answer_with_optional_ttl(
+            message,
+            "Не вдалося знайти користувача. Використай reply на його повідомлення.",
+            ttl_seconds=60,
+        )
+        return
+    if not target:
+        return
+
+    active_warnings = await list_active_warnings(target.user_id)
+    history_warnings = await list_warning_history(target.user_id)
+
+    user_mention = _target_mention(target)
+    lines: list[str] = []
 
     if active_warnings:
-        lines.append(f"Активні попередження: {len(active_warnings)}")
-        for warning in active_warnings:
-            lines.append(
-                f"- {format_uk_date(warning.issued_at)} > {html.escape(warning.reason)}"
-            )
+        lines.append(
+            f"Гравець {user_mention} зараз має активні <b>{len(active_warnings)}</b> попередження:"
+        )
+        lines.extend(_warning_line_with_expiry(warning) for warning in active_warnings)
     else:
-        lines.append("Активних попереджень немає.")
+        lines.append(f"Гравець {user_mention} не має активних попереджень.")
 
     if history_warnings:
-        lines.append("Повна історія:")
-        for warning in history_warnings:
-            status = warning_status_label(warning)
-            lines.append(
-                f"- {format_uk_date(warning.issued_at)} > {html.escape(warning.reason)} ({status})"
-            )
+        lines.append("")
+        lines.append("Загалом у гравця були такі попередження:")
+        lines.extend(_warning_line_with_status(warning) for warning in history_warnings)
     else:
-        lines.append("Історія попереджень порожня.")
+        lines.append("")
+        lines.append("Загалом, гравець не отримав по шапці жодного разу.")
 
     await message.bot.send_message(
         ADMIN_LOG_CHAT_ID,
@@ -232,25 +607,28 @@ async def winfo_handler(message: Message) -> None:
         parse_mode="HTML",
     )
 
+    await _delete_command_on_success(message)
+
 
 @router.message(Command("mywarns"))
 async def mywarns_handler(message: Message) -> None:
+    """Показує користувачу короткий підсумок його активних попереджень."""
+
     if not message.from_user:
         return
 
     active_warnings = await list_active_warnings(message.from_user.id)
     if not active_warnings:
-        await message.answer(
-            "У тебе немає ні попереджень, ні совісті дарма мене турбувати!"
-        )
+        await message.answer("У тебе немає ні попереджень, ні совісті дарма мене турбувати!")
         return
 
-    latest_expiration = max(warning.expires_at for warning in active_warnings)
+    latest_expires_at = max(warning.expires_at for warning in active_warnings)
     await message.answer(
         "\n".join(
             [
-                f"Активних попереджень: {len(active_warnings)}",
-                f"Найсвіжіше діє до: {format_uk_date(latest_expiration)}",
+                f"У тебе є активних <b>{len(active_warnings)}</b> попереджень.",
+                f"Дійсні до: {format_ua_date(latest_expires_at)}",
             ]
-        )
+        ),
+        parse_mode="HTML",
     )
