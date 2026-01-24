@@ -12,10 +12,6 @@ router = Router()
     ~F.text.regexp(r"^[!/]\w+"),
 )
 async def collect_member(message: Message) -> None:
-    # Працюємо тільки в групах/супергрупах
-    if message.chat.type not in ("group", "supergroup"):
-        return
-
     user = message.from_user
     if not user or user.is_bot:
         return
