@@ -310,19 +310,32 @@ async def get_latest_active_warning(user_id: int) -> WarningRecord | None:
         return _row_to_warning(row) if row else None
 
 
-async def list_warning_history(user_id: int) -> list[WarningRecord]:
-    """Повертає повну історію попереджень без фільтрації за строком дії.
+async def list_warning_history(
+    user_id: int,
+    *,
+    include_revoked: bool = True,
+) -> list[WarningRecord]:
+    """Повертає історію попереджень без фільтрації за строком дії.
+
+    Історія залишається в БД повністю, але у звітах можна приховати
+    скасовані попередження, щоб відповідати очікуванням операторів.
 
     Параметри:
         user_id: Ідентифікатор користувача.
+        include_revoked: Чи включати скасовані попередження у відповідь.
 
     Повертає:
-        Список усіх попереджень (активні, протерміновані, скасовані).
+        Список попереджень (активні, протерміновані і, опційно, скасовані).
     """
 
+    where_clause = (
+        "user_id = ?"
+        if include_revoked
+        else "user_id = ? AND is_revoked = 0"
+    )
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            """
+            f"""
             SELECT
                 id,
                 user_id,
@@ -338,7 +351,7 @@ async def list_warning_history(user_id: int) -> list[WarningRecord]:
                 revoked_at,
                 revoked_by
             FROM warnings
-            WHERE user_id = ?
+            WHERE {where_clause}
             ORDER BY issued_at DESC, id DESC
             """,
             (user_id,),

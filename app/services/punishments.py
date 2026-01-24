@@ -22,6 +22,8 @@ async def enforce_warning_ban(
 
     Важливо: автоматичний розбан навмисно не виконується, щоби не
     перекреслити рішення адміністрації та не створити «тихий» стан.
+    Якщо користувач уже заблокований у чаті, повторний бан не виконуємо,
+    щоби не спамити службові повідомлення.
 
     Параметри:
         bot: Екземпляр бота для виклику Telegram API.
@@ -37,6 +39,14 @@ async def enforce_warning_ban(
 
     if active_count < 3:
         return False
+
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        if getattr(member, "status", "") in {"kicked", "banned"}:
+            return False
+    except Exception:
+        # Якщо не вдалося зчитати статус, все одно пробуємо бан.
+        pass
 
     try:
         await bot.ban_chat_member(chat_id, user_id)
