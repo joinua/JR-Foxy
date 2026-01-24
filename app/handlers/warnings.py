@@ -624,6 +624,11 @@ async def mywarns_handler(message: Message) -> None:
     if not message.from_user:
         return
 
+    logger.info(
+        "mywarns handler hit",
+        extra={"user_id": message.from_user.id, "chat_id": message.chat.id},
+    )
+
     active_warnings = await list_active_warnings(message.from_user.id)
     if not active_warnings:
         await message.answer(

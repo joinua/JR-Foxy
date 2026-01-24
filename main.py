@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from app.core.bot import bot, dp
 from app.core.config import BOT_OWNER_ID
@@ -16,6 +17,8 @@ from app.handlers.start import router as start_router
 from app.handlers.welcome import router as welcome_router
 from app.handlers.predict import router as predict_router
 from app.handlers.warnings import router as warnings_router
+
+logger = logging.getLogger(__name__)
 
 
 ROUTERS = (
@@ -40,9 +43,11 @@ def setup_middlewares() -> None:
 def setup_routers() -> None:
     for router in ROUTERS:
         dp.include_router(router)
+    logger.info("routers registered", extra={"count": len(ROUTERS)})
 
 
 async def main() -> None:
+    logging.basicConfig(level=logging.INFO)
     setup_middlewares()
     setup_routers()
 
@@ -50,6 +55,11 @@ async def main() -> None:
     await add_admin(BOT_OWNER_ID)
     await set_admin_level(BOT_OWNER_ID, 4)
 
+    me = await bot.get_me()
+    logger.info(
+        "starting polling",
+        extra={"bot_id": me.id, "username": me.username},
+    )
     await dp.start_polling(bot)
 
 
