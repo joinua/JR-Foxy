@@ -8,8 +8,9 @@ import html
 import logging
 import re
 
-from aiogram import Router
-from aiogram.filters import Command, Text
+from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.core.config import ADMIN_LOG_CHAT_ID
@@ -20,10 +21,10 @@ from app.services.warnings import (
     WarningRecord,
     build_mention,
     create_warning,
-    get_latest_active_warning,
     list_active_warnings,
     list_warning_history,
     revoke_latest_warning,
+    warning_status_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,9 @@ router = Router()
 
 _COMMAND_RE = re.compile(
     r"^[!/]"  # префікс команди
-    r"(?P<name>\\w+)"  # назва команди
+    r"(?P<name>\w+)"  # назва команди
     r"(?:@[A-Za-z0-9_]+)?"  # опційно bot username
-    r"(?:\\s+(?P<args>.*))?$"  # аргументи
+    r"(?:\s+(?P<args>.*))?$"  # аргументи
 )
 
 
@@ -93,7 +94,7 @@ async def _safe_delete_message(message: Message) -> None:
 
     try:
         await message.bot.delete_message(message.chat.id, message.message_id)
-    except Exception:
+    except (TelegramBadRequest, TelegramForbiddenError):
         return
 
 
@@ -157,11 +158,7 @@ async def _require_admin_level(
 
     level = await get_admin_level(message.from_user.id)
     if level < min_level:
-        await _answer_with_optional_ttl(
-            message,
-            error_text,
-            ttl_seconds=ttl_seconds,
-        )
+        await _answer_with_optional_ttl(message, error_text, ttl_seconds=ttl_seconds)
         return None
 
     return level
@@ -223,7 +220,7 @@ async def _resolve_target_user(
     username_token = args.pop(0)
     try:
         chat = await message.bot.get_chat(username_token)
-    except Exception:
+    except (TelegramBadRequest, TelegramForbiddenError):
         return None, "username_not_found"
 
     if getattr(chat, "type", None) != "private":
@@ -292,16 +289,7 @@ async def _send_autoban_notifications(
     warning: WarningRecord,
     active_count: int,
 ) -> None:
-    """Надсилає повідомлення про автобан у лог-чат та публічно.
-
-    Параметри:
-        message: Оригінальне повідомлення з командою warn.
-        target: Ціль модерації.
-        user_mention: HTML-mention цілі.
-        admin_mention: HTML-mention адміністратора.
-        warning: Останній виданий варн, який призвів до автобану.
-        active_count: Поточна кількість активних попереджень.
-    """
+    """Надсилає повідомлення про автобан у лог-чат та публічно."""
 
     chat_title = html.escape(_chat_title(message))
     await message.bot.send_message(
@@ -322,10 +310,13 @@ async def _send_autoban_notifications(
     )
 
     await message.answer(
-        (
-            f"{user_mention} ({target.user_id}) покидає нас через систематичні порушення правил клану. "
-            "Адміністрація вживає заходів з його відлучення від кланової інфраструктури. "
-            "Не порушуйте!"
+        "\n".join(
+            [
+                f"{user_mention} ({target.user_id}) покидає нас через"
+                "систематичні порушення правил клану.",
+                "Адміністрація вживає заходів з його відлучення від кланової інфраструктури.",
+                "Не порушуйте!",
+            ]
         ),
         parse_mode="HTML",
     )
@@ -341,7 +332,7 @@ async def _send_autoban_notifications(
 
 
 @router.message(Command("warn"))
-@router.message(Text(regexp=r"^!warn(?:\s|$)"))
+@router.message(F.text.regexp(r"^!warn(?:\s|$)"))
 async def warn_handler(message: Message) -> None:
     """Видає попередження та, за потреби, тригерить автобан."""
 
@@ -359,10 +350,12 @@ async def warn_handler(message: Message) -> None:
 
     args = _parse_command_args(message, "warn")
     target, error_code = await _resolve_target_user(message, args)
+
     if error_code == "no_target":
         await _answer_with_optional_ttl(
             message,
             "Вкажи гравця через @username або використай команду у відповідь на його повідомлення.",
+            ttl_seconds=60,
         )
         return
     if error_code == "username_not_found":
@@ -384,7 +377,8 @@ async def warn_handler(message: Message) -> None:
     if target.is_bot or target.user_id == message.bot.id:
         await _answer_with_optional_ttl(
             message,
-            "Відколи бот у тебе порушник правил? Боту не можна видати попередження, а я тобі можу ахаха",
+            "Відколи бот у тебе порушник правил?"
+            "Боту не можна видати попередження, а я тобі можу ахаха",
         )
         return
 
@@ -459,7 +453,7 @@ async def warn_handler(message: Message) -> None:
 
 
 @router.message(Command("unwarn"))
-@router.message(Text(regexp=r"^!unwarn(?:\s|$)"))
+@router.message(F.text.regexp(r"^!unwarn(?:\s|$)"))
 async def unwarn_handler(message: Message) -> None:
     """Скасовує останнє активне попередження без видалення історії."""
 
@@ -477,6 +471,7 @@ async def unwarn_handler(message: Message) -> None:
 
     args = _parse_command_args(message, "unwarn")
     target, error_code = await _resolve_target_user(message, args)
+
     if error_code == "no_target":
         await _answer_with_optional_ttl(
             message,
@@ -500,10 +495,7 @@ async def unwarn_handler(message: Message) -> None:
         return
 
     if target.is_bot or target.user_id == message.bot.id:
-        await _answer_with_optional_ttl(
-            message,
-            "До бота попередження не застосовуються.",
-        )
+        await _answer_with_optional_ttl(message, "До бота попередження не застосовуються.")
         return
 
     revoked_warning, active_count = await revoke_latest_warning(
@@ -525,15 +517,15 @@ async def unwarn_handler(message: Message) -> None:
         )
         return
 
-    issued_at_line = (
-        f"{format_ua_date(revoked_warning.issued_at)}"
-        f" > {_escape_reason(revoked_warning.reason)}"
-    )
     await message.answer(
         f"Попередження для {user_mention} скасовано.",
         parse_mode="HTML",
     )
 
+    issued_at_line = (
+        f"{format_ua_date(revoked_warning.issued_at)}"
+        f" > {_escape_reason(revoked_warning.reason)}"
+    )
     chat_title = html.escape(_chat_title(message))
     await message.bot.send_message(
         ADMIN_LOG_CHAT_ID,
@@ -549,22 +541,11 @@ async def unwarn_handler(message: Message) -> None:
         parse_mode="HTML",
     )
 
-    latest_active_warning = await get_latest_active_warning(target.user_id)
-    if active_count >= 3 and latest_active_warning:
-        await enforce_warning_ban(
-            message.bot,
-            message.chat.id,
-            target.user_id,
-            active_count,
-            admin_id=latest_active_warning.issued_by,
-            warning_id=latest_active_warning.id,
-        )
-
     await _delete_command_on_success(message)
 
 
 @router.message(Command("winfo"))
-@router.message(Text(regexp=r"^!winfo(?:\s|$)"))
+@router.message(F.text.regexp(r"^!winfo(?:\s|$)"))
 async def winfo_handler(message: Message) -> None:
     """Формує звіт про активні попередження та повну історію в лог-чат."""
 
@@ -578,16 +559,19 @@ async def winfo_handler(message: Message) -> None:
 
     args = _parse_command_args(message, "winfo")
     target, error_code = await _resolve_target_user(message, args)
+
     if error_code == "no_target":
         await _answer_with_optional_ttl(
             message,
             "Вкажи гравця через @username або використай reply на його повідомлення.",
+            ttl_seconds=60,
         )
         return
     if error_code == "username_not_found":
         await _answer_with_optional_ttl(
             message,
             "Не вдалося знайти користувача. Використай reply на його повідомлення.",
+            ttl_seconds=60,
         )
         return
     if not target:
@@ -596,7 +580,7 @@ async def winfo_handler(message: Message) -> None:
     active_warnings = await list_active_warnings(target.user_id)
     history_warnings = await list_warning_history(
         target.user_id,
-        include_revoked=False,
+        include_revoked=True,
     )
 
     user_mention = _target_mention(target)
@@ -613,7 +597,13 @@ async def winfo_handler(message: Message) -> None:
     if history_warnings:
         lines.append("")
         lines.append("Загалом у гравця були такі попередження:")
-        lines.extend(_warning_line(warning) for warning in history_warnings)
+        lines.extend(
+            (
+                f"{format_ua_date(w.issued_at)} > {_escape_reason(w.reason)} "
+                f"[{warning_status_label(w)}]"
+            )
+            for w in history_warnings
+        )
     else:
         lines.append("")
         lines.append("Загалом, грацець не отримав по шапці жодного разу")
@@ -636,7 +626,9 @@ async def mywarns_handler(message: Message) -> None:
 
     active_warnings = await list_active_warnings(message.from_user.id)
     if not active_warnings:
-        await message.answer("У тебе немає ні попереджень, ні совісті дарма мене турбувати!")
+        await message.answer(
+            "У тебе немає ні попереджень, ні совісті дарма мене турбувати!"
+        )
         return
 
     # Сервіс повертає активні попередження від найновішого до найстарішого.
