@@ -15,6 +15,7 @@ from app.handlers.ping import router as ping_router
 from app.handlers.start import router as start_router
 from app.handlers.welcome import router as welcome_router
 from app.handlers.predict import router as predict_router
+from app.handlers.warnings import router as warnings_router
 
 
 ROUTERS = (
@@ -27,6 +28,7 @@ ROUTERS = (
     admin_router,
     call_router,
     collect_router,
+    warnings_router,
 )
 
 

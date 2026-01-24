@@ -1,4 +1,4 @@
-"""Database helpers for the bot."""
+"""Допоміжні функції для роботи з базою даних бота."""
 
 from pathlib import Path
 import time
@@ -6,6 +6,37 @@ import time
 import aiosqlite
 
 DB_PATH = Path("data") / "jrfoxy.db"
+
+
+async def _ensure_warnings_schema(db: aiosqlite.Connection) -> None:
+    """Гарантує актуальну схему таблиці `warnings` без втрати історії.
+
+    Підтримуємо міграції через `ALTER TABLE`, бо попередження є аудит-логом
+    і видаляти/пересоздавати таблицю не можна.
+
+    Параметри:
+        db: Відкрите з'єднання з SQLite.
+    """
+
+    cursor = await db.execute("PRAGMA table_info(warnings)")
+    columns = {row[1] for row in await cursor.fetchall()}
+
+    if "user_username_snapshot" not in columns:
+        await db.execute(
+            "ALTER TABLE warnings ADD COLUMN user_username_snapshot TEXT"
+        )
+
+    if "admin_username_snapshot" not in columns:
+        await db.execute(
+            "ALTER TABLE warnings ADD COLUMN admin_username_snapshot TEXT"
+        )
+
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_warnings_active_lookup
+        ON warnings (user_id, is_revoked, expires_at)
+        """
+    )
 
 
 async def init_db() -> None:
@@ -44,8 +75,24 @@ async def init_db() -> None:
                 updated_at  INTEGER NOT NULL,
                 PRIMARY KEY (chat_id, key)
             );
+            CREATE TABLE IF NOT EXISTS warnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                issued_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                issued_by INTEGER NOT NULL,
+                issued_by_level INTEGER NOT NULL,
+                user_username_snapshot TEXT,
+                admin_username_snapshot TEXT,
+                is_revoked INTEGER NOT NULL DEFAULT 0,
+                revoked_at INTEGER,
+                revoked_by INTEGER
+            );
             """
         )
+        await _ensure_warnings_schema(db)
         await db.commit()
 
 
