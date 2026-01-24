@@ -1,5 +1,5 @@
 import time
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.types import Message
 
 from app.core.db import upsert_call_member
@@ -7,7 +7,10 @@ from app.core.db import upsert_call_member
 router = Router()
 
 
-@router.message()
+@router.message(
+    F.chat.type.in_({"group", "supergroup"}),
+    ~F.text.regexp(r"^[!/]\w+"),
+)
 async def collect_member(message: Message) -> None:
     # Працюємо тільки в групах/супергрупах
     if message.chat.type not in ("group", "supergroup"):
