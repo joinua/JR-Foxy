@@ -8,14 +8,15 @@ import html
 import logging
 import re
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.core.config import ADMIN_LOG_CHAT_ID
 from app.core.dates import format_ua_date
-from app.core.db import get_admin_level
+from app.core.db import find_user_by_username
+from app.core.db import find_user_id_by_username_snapshot, get_admin_level
 from app.services.punishments import enforce_warning_ban
 from app.services.warnings import (
     WarningRecord,
@@ -59,14 +60,8 @@ class TargetUser:
 
 def _chat_title(message: Message) -> str:
     """Повертає безпечну для відображення назву чату."""
-
     chat = message.chat
-    return (
-        chat.title
-        or getattr(chat, "full_name", None)
-        or chat.username
-        or str(chat.id)
-    )
+    return chat.title or getattr(chat, "full_name", None) or chat.username or str(chat.id)
 
 
 def _parse_command_args(message: Message, expected: str) -> list[str]:
@@ -79,7 +74,6 @@ def _parse_command_args(message: Message, expected: str) -> list[str]:
     Повертає:
         Список токенів аргументів (без самої команди).
     """
-
     text = (message.text or "").strip()
     match = _COMMAND_RE.match(text)
     if not match or match.group("name").lower() != expected:
@@ -91,7 +85,6 @@ def _parse_command_args(message: Message, expected: str) -> list[str]:
 
 async def _safe_delete_message(message: Message) -> None:
     """Безпечно видаляє повідомлення, ігноруючи помилки прав доступу."""
-
     try:
         await message.bot.delete_message(message.chat.id, message.message_id)
     except (TelegramBadRequest, TelegramForbiddenError):
@@ -100,7 +93,6 @@ async def _safe_delete_message(message: Message) -> None:
 
 async def _delete_message_later(message: Message, delay_seconds: int) -> None:
     """Планує видалення повідомлення через заданий час."""
-
     await asyncio.sleep(delay_seconds)
     await _safe_delete_message(message)
 
@@ -111,17 +103,7 @@ async def _answer_with_optional_ttl(
     *,
     ttl_seconds: int | None = None,
 ) -> Message:
-    """Відповідає адміну та, за потреби, видаляє відповідь із затримкою.
-
-    Параметри:
-        message: Повідомлення з командою.
-        text: Текст відповіді.
-        ttl_seconds: Якщо задано, відповідь буде видалено через цей час.
-
-    Повертає:
-        Надіслане повідомлення-відповідь.
-    """
-
+    """Відповідає адміну та, за потреби, видаляє відповідь із затримкою."""
     response = await message.answer(text, parse_mode="HTML")
     if ttl_seconds is not None:
         asyncio.create_task(_delete_message_later(response, ttl_seconds))
@@ -130,7 +112,6 @@ async def _answer_with_optional_ttl(
 
 async def _delete_command_on_success(message: Message) -> None:
     """Видаляє повідомлення-команду після успішної модераційної дії."""
-
     await _safe_delete_message(message)
 
 
@@ -141,18 +122,7 @@ async def _require_admin_level(
     *,
     ttl_seconds: int | None = None,
 ) -> int | None:
-    """Перевіряє рівень доступу адміністратора.
-
-    Параметри:
-        message: Повідомлення з командою.
-        min_level: Мінімально необхідний рівень.
-        error_text: Текст помилки у випадку недостатніх прав.
-        ttl_seconds: Час автознищення повідомлення про помилку в секундах.
-
-    Повертає:
-        Рівень адміністратора, якщо перевірка пройдена, інакше None.
-    """
-
+    """Перевіряє рівень доступу адміністратора."""
     if not message.from_user:
         return None
 
@@ -166,7 +136,6 @@ async def _require_admin_level(
 
 def _target_display_first_name(target: TargetUser) -> str | None:
     """Повертає найкраще доступне ім'я для mention цілі."""
-
     if target.first_name:
         return target.first_name
     if target.username_snapshot:
@@ -176,7 +145,6 @@ def _target_display_first_name(target: TargetUser) -> str | None:
 
 def _target_mention(target: TargetUser) -> str:
     """Будує mention цілі з пріоритетом імені, а далі username snapshot."""
-
     return build_mention(
         target.user_id,
         _target_display_first_name(target),
@@ -188,20 +156,12 @@ async def _resolve_target_user(
     message: Message,
     args: list[str],
 ) -> tuple[TargetUser | None, str | None]:
-    """Резолвить ціль через reply або @username (reply має пріоритет).
-
-    Параметри:
-        message: Повідомлення з командою.
-        args: Список аргументів; може бути змінений (видалення @username).
-
-    Повертає:
-        Кортеж (ціль або None, код помилки або None).
-        Коди помилок: `no_target`, `username_not_found`.
-    """
-
+    """Резолвить ціль через reply або @username (reply має пріоритет)."""
     if message.reply_to_message and message.reply_to_message.from_user:
+        # Якщо випадково передали @username — ігноруємо, reply має пріоритет.
         if args and args[0].startswith("@"):
             args.pop(0)
+
         user = message.reply_to_message.from_user
         return (
             TargetUser(
@@ -218,21 +178,53 @@ async def _resolve_target_user(
         return None, "no_target"
 
     username_token = args.pop(0)
-    try:
-        chat = await message.bot.get_chat(username_token)
-    except (TelegramBadRequest, TelegramForbiddenError):
-        return None, "username_not_found"
+    username = username_token.lstrip("@")
 
-    if getattr(chat, "type", None) != "private":
+    # 1) Пробуємо через Telegram API (може спрацювати, якщо юзер “видимий” для бота)
+    try:
+        chat = await message.bot.get_chat(username)
+        if getattr(chat, "type", None) == "private":
+            return (
+                TargetUser(
+                    user_id=chat.id,
+                    first_name=getattr(chat, "first_name", None),
+                    last_name=getattr(chat, "last_name", None),
+                    username_snapshot=getattr(chat, "username", username),
+                    is_bot=bool(getattr(chat, "is_bot", False)),
+                ),
+                None,
+            )
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
+
+# 2) Основний шлях: локальна БД (бот "чув" юзера в чаті)
+    found = await find_user_by_username(username)
+    if found:
+        user_id, first_name, last_name, username_db = found
+        return (
+            TargetUser(
+                user_id=user_id,
+                first_name=first_name,
+                last_name=last_name,
+                username_snapshot=username_db or username,
+                is_bot=False,
+            ),
+            None,
+        )
+
+
+    # 2) Fallback: якщо юзер вже мав варни — знайдемо user_id по snapshot у БД
+    user_id = await find_user_id_by_username_snapshot(username)
+    if not user_id:
         return None, "username_not_found"
 
     return (
         TargetUser(
-            user_id=chat.id,
-            first_name=getattr(chat, "first_name", None),
-            last_name=getattr(chat, "last_name", None),
-            username_snapshot=getattr(chat, "username", None),
-            is_bot=bool(getattr(chat, "is_bot", False)),
+            user_id=user_id,
+            first_name=None,
+            last_name=None,
+            username_snapshot=username,
+            is_bot=False,
         ),
         None,
     )
@@ -240,13 +232,11 @@ async def _resolve_target_user(
 
 def _escape_reason(reason: str) -> str:
     """Екранує причину попередження для HTML-повідомлень."""
-
     return html.escape(reason)
 
 
 def _warning_line(warning: WarningRecord) -> str:
     """Формує рядок попередження у вигляді «дата > причина»."""
-
     return f"{format_ua_date(warning.issued_at)} > {_escape_reason(warning.reason)}"
 
 
@@ -262,7 +252,6 @@ async def _send_warn_log(
     active_count: int,
 ) -> None:
     """Надсилає деталізований WARN-запис до лог-чату."""
-
     chat_title = html.escape(_chat_title(message))
     await message.bot.send_message(
         ADMIN_LOG_CHAT_ID,
@@ -290,7 +279,6 @@ async def _send_autoban_notifications(
     active_count: int,
 ) -> None:
     """Надсилає повідомлення про автобан у лог-чат та публічно."""
-
     chat_title = html.escape(_chat_title(message))
     await message.bot.send_message(
         ADMIN_LOG_CHAT_ID,
@@ -335,7 +323,6 @@ async def _send_autoban_notifications(
 @router.message(F.text.regexp(r"^!warn(?:\s|$)"))
 async def warn_handler(message: Message) -> None:
     """Видає попередження та, за потреби, тригерить автобан."""
-
     if not message.from_user:
         return
 
@@ -456,7 +443,6 @@ async def warn_handler(message: Message) -> None:
 @router.message(F.text.regexp(r"^!unwarn(?:\s|$)"))
 async def unwarn_handler(message: Message) -> None:
     """Скасовує останнє активне попередження без видалення історії."""
-
     if not message.from_user:
         return
 
@@ -548,7 +534,6 @@ async def unwarn_handler(message: Message) -> None:
 @router.message(F.text.regexp(r"^!winfo(?:\s|$)"))
 async def winfo_handler(message: Message) -> None:
     """Формує звіт про активні попередження та повну історію в лог-чат."""
-
     if await _require_admin_level(
         message,
         3,
@@ -578,10 +563,7 @@ async def winfo_handler(message: Message) -> None:
         return
 
     active_warnings = await list_active_warnings(target.user_id)
-    history_warnings = await list_warning_history(
-        target.user_id,
-        include_revoked=True,
-    )
+    history_warnings = await list_warning_history(target.user_id, include_revoked=True)
 
     user_mention = _target_mention(target)
     lines: list[str] = []
@@ -620,7 +602,6 @@ async def winfo_handler(message: Message) -> None:
 @router.message(Command("mywarns"))
 async def mywarns_handler(message: Message) -> None:
     """Показує користувачу короткий підсумок його активних попереджень."""
-
     if not message.from_user:
         return
 
@@ -631,9 +612,7 @@ async def mywarns_handler(message: Message) -> None:
 
     active_warnings = await list_active_warnings(message.from_user.id)
     if not active_warnings:
-        await message.answer(
-            "У тебе немає ні попереджень, ні совісті дарма мене турбувати!"
-        )
+        await message.answer("У тебе немає ні попереджень, ні совісті дарма мене турбувати!")
         return
 
     # Сервіс повертає активні попередження від найновішого до найстарішого.

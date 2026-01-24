@@ -1,4 +1,7 @@
-"""Централізоване форматування дат для повідомлень українською."""
+"""Централізоване форматування дат для повідомлень українською.
+
+Безпечна реалізація для Windows (fallback, якщо Europe/Kyiv недоступний).
+"""
 
 from __future__ import annotations
 
@@ -6,10 +9,9 @@ from datetime import datetime
 from typing import Optional
 
 try:
-    # Python 3.9+
-    from zoneinfo import ZoneInfo as _ZoneInfo
+    from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover
-    _ZoneInfo = None
+    ZoneInfo = None  # type: ignore
 
 
 _MONTHS_UA = {
@@ -29,21 +31,21 @@ _MONTHS_UA = {
 
 
 def _ua_tz() -> Optional[object]:
-    """Повертає часову зону України (Europe/Kyiv), якщо доступна."""
-    if _ZoneInfo is None:
+    """Повертає ZoneInfo('Europe/Kyiv') або None, якщо зона недоступна."""
+
+    if ZoneInfo is None:
         return None
-    return _ZoneInfo("Europe/Kyiv")
+
+    try:
+        return ZoneInfo("Europe/Kyiv")
+    except Exception:
+        # Windows без tzdata — працюємо без timezone
+        return None
 
 
 def _to_datetime(value: datetime | int) -> datetime:
-    """Нормалізує значення дати до datetime у часовій зоні Europe/Kyiv.
+    """Нормалізує дату до datetime, БЕЗПЕЧНО для Windows."""
 
-    Параметри:
-        value: datetime або UNIX-мітка у секундах.
-
-    Повертає:
-        datetime у часовій зоні Europe/Kyiv (або без tzinfo, якщо tz недоступна).
-    """
     tz = _ua_tz()
 
     if isinstance(value, datetime):
@@ -53,14 +55,15 @@ def _to_datetime(value: datetime | int) -> datetime:
             return value.replace(tzinfo=tz)
         return value.astimezone(tz)
 
-    timestamp = int(value)
+    ts = int(value)
     if tz is None:
-        return datetime.fromtimestamp(timestamp)
-    return datetime.fromtimestamp(timestamp, tz=tz)
+        return datetime.fromtimestamp(ts)
+    return datetime.fromtimestamp(ts, tz=tz)
 
 
 def format_ua_date(value: datetime | int) -> str:
-    """Форматує дату у вигляд: 30 жовтня 2026 року."""
+    """Форматує дату у вигляді: 30 жовтня 2026 року."""
+
     dt = _to_datetime(value)
     month = _MONTHS_UA.get(dt.month, "")
     return f"{dt.day} {month} {dt.year} року"

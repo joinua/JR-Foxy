@@ -294,3 +294,97 @@ async def get_chat_setting(chat_id: int, key: str) -> str | None:
         )
         row = await cursor.fetchone()
         return str(row[0]) if row else None
+
+async def find_user_id_by_username_snapshot(username: str) -> int | None:
+    """Шукає user_id за збереженим username у таблиці warnings.
+
+    Працює для випадку, коли Telegram API не може резолвнути @username напряму.
+    Повертає останній відомий user_id для цього username, якщо він є в історії варнів.
+    """
+    username = username.lstrip("@")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_warnings_schema(db)
+        cur = await db.execute(
+            """
+            SELECT user_id
+            FROM warnings
+            WHERE user_username_snapshot = ? COLLATE NOCASE
+            ORDER BY issued_at DESC
+            LIMIT 1
+            """,
+            (username,),
+        )
+        row = await cur.fetchone()
+        return int(row[0]) if row else None
+
+async def find_user_by_username(
+    username: str,
+) -> tuple[
+    int,
+    str | None,
+    str | None,
+    str | None,
+] | None:
+    """Шукає користувача по username в локальній БД.
+
+    Джерела (в пріоритеті):
+    1) call_members (бот "чув" в чаті)
+    2) admins (якщо ведете профілі адмінів)
+    3) warnings.user_username_snapshot (якщо вже були варни)
+
+    Повертає:
+        (user_id, first_name, last_name, username) або None
+    """
+
+    username = username.lstrip("@")
+    if not username:
+        return None
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_warnings_schema(db)
+
+        # 1) call_members — основне джерело
+        cur = await db.execute(
+            """
+            SELECT user_id, first_name, last_name, username
+            FROM call_members
+            WHERE username = ? COLLATE NOCASE
+            ORDER BY last_seen DESC
+            LIMIT 1
+            """,
+            (username,),
+        )
+        row = await cur.fetchone()
+        if row:
+            return int(row[0]), row[1], row[2], row[3]
+
+        # 2) admins — якщо username є в таблиці адмінів
+        cur = await db.execute(
+            """
+            SELECT user_id, first_name, last_name, username
+            FROM admins
+            WHERE username = ? COLLATE NOCASE
+            LIMIT 1
+            """,
+            (username,),
+        )
+        row = await cur.fetchone()
+        if row:
+            return int(row[0]), row[1], row[2], row[3]
+
+        # 3) warnings snapshot — якщо були варни раніше
+        cur = await db.execute(
+            """
+            SELECT user_id, NULL, NULL, user_username_snapshot
+            FROM warnings
+            WHERE user_username_snapshot = ? COLLATE NOCASE
+            ORDER BY issued_at DESC
+            LIMIT 1
+            """,
+            (username,),
+        )
+        row = await cur.fetchone()
+        if row:
+            return int(row[0]), None, None, row[3]
+
+        return None
