@@ -61,7 +61,7 @@ async def on_new_members(message: Message):
     """Вітає нових учасників у головному чаті та зберігає дату входу."""
 
     custom_rules_url = await get_chat_setting(MAIN_CHAT_ID, "rules_url")
-    rules_url = custom_rules_url or RULES_URL
+    rules_url = (custom_rules_url or RULES_URL).strip()
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
