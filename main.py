@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 ROUTERS = (
-    chat_guard_router,  # має бути першим
+    chat_guard_router,  # має бути першим в списку
     welcome_router,
     predict_router,
     start_router,
