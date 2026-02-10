@@ -4,12 +4,13 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.core.config import BOT_OWNER_ID
+from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID
 from app.core.db import (
     add_admin,
     delete_admin,
     get_admin_level,
     list_admins,
+    set_chat_setting,
     set_admin_level,
     update_admin_profile,
 )
@@ -202,3 +203,31 @@ async def admin_list_handler(message: Message) -> None:
         lines.append(line)
 
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("silence_enable"))
+async def silence_enable_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+
+    await sync_owner_profile(message)
+
+    if not await require_level(message, 4):
+        return
+
+    await set_chat_setting(MAIN_CHAT_ID, "silence_enabled", "1")
+    await message.answer("Хвилину мовчання УВІМКНЕНО.")
+
+
+@router.message(Command("silence_disable"))
+async def silence_disable_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+
+    await sync_owner_profile(message)
+
+    if not await require_level(message, 4):
+        return
+
+    await set_chat_setting(MAIN_CHAT_ID, "silence_enabled", "0")
+    await message.answer("Хвилину мовчання ВИМКНЕНО.")

@@ -18,6 +18,7 @@ from app.handlers.start import router as start_router
 from app.handlers.welcome import router as welcome_router
 from app.handlers.predict import router as predict_router
 from app.handlers.warnings import router as warnings_router
+from app.services.silence import run_silence_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,12 @@ async def main() -> None:
         "starting polling",
         extra={"bot_id": me.id, "username": me.username},
     )
-    await dp.start_polling(bot)
+
+    silence_task = asyncio.create_task(run_silence_scheduler(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        silence_task.cancel()
 
 
 if __name__ == "__main__":
