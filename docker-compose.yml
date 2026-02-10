@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  jr-foxy:
+    build: .
+    container_name: jr-foxy
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
