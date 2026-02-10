@@ -44,3 +44,13 @@ try:
     ADMIN_LOG_CHAT_ID = int(ADMIN_LOG_CHAT_ID_RAW)
 except ValueError as exc:
     raise RuntimeError("ADMIN_LOG_CHAT_ID must be an integer") from exc
+
+FAMILY_CHAT_ID_RAW = os.getenv("FAMILY_CHAT_ID")
+
+if not FAMILY_CHAT_ID_RAW:
+    raise RuntimeError("FAMILY_CHAT_ID not set in .env")
+
+try:
+    FAMILY_CHAT_ID = int(FAMILY_CHAT_ID_RAW)
+except ValueError as exc:
+    raise RuntimeError("FAMILY_CHAT_ID must be an integer") from exc

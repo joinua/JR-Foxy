@@ -10,6 +10,7 @@ from app.routers.chat_guard import router as chat_guard_router
 
 from app.handlers.admin import router as admin_router
 from app.handlers.call import router as call_router
+from app.handlers.broadcast import router as broadcast_router
 from app.handlers.chatid import router as chatid_router
 from app.handlers.collect_members import router as collect_router
 from app.handlers.ping import router as ping_router
@@ -29,6 +30,7 @@ ROUTERS = (
     chatid_router,
     ping_router,
     admin_router,
+    broadcast_router,
     call_router,
     collect_router,
     warnings_router,
