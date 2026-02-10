@@ -17,6 +17,7 @@ jobs:
           script: |
             set -e
             cd ${{ secrets.VPS_PATH }}
-            git pull
-            docker compose up -d --build
+            git fetch origin
+            git reset --hard origin/main
+            docker compose up -d --build --remove-orphans
             docker image prune -f
