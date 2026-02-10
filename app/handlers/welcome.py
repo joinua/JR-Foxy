@@ -10,7 +10,7 @@ from aiogram.types import (
     Message,
 )
 
-from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID
+from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID, RULES_URL
 from app.core.db import (
     ensure_clan_member,
     get_admin_level,
@@ -20,8 +20,6 @@ from app.core.db import (
 
 
 router = Router()
-
-RULES_URL = "https://teletype.in/@jokerrecon/OfRules"
 
 DEFAULT_WELCOME_HTML = (
     "{mention}, вітаю в клані!\n"
@@ -62,12 +60,15 @@ def mention_html(user) -> str:
 async def on_new_members(message: Message):
     """Вітає нових учасників у головному чаті та зберігає дату входу."""
 
+    custom_rules_url = await get_chat_setting(MAIN_CHAT_ID, "rules_url")
+    rules_url = custom_rules_url or RULES_URL
+
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
         [
             InlineKeyboardButton(
                 text="Правила клану",
-                url=RULES_URL,
+                url=rules_url,
                 )
             ]
         ]
@@ -130,3 +131,32 @@ async def upload_welcome(message: Message):
         new_template,
     )
     await message.answer("Вітальне повідомлення оновлено.")
+
+
+@router.message(F.chat.id == MAIN_CHAT_ID, Command("uploadrules"))
+async def upload_rules(message: Message):
+    """Оновлює посилання на правила (доступно власнику або адмінам 3+)."""
+
+    uid = message.from_user.id if message.from_user else 0
+    level = await get_admin_level(uid)
+
+    if uid != BOT_OWNER_ID and level < 3:
+        return
+
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+
+    if len(parts) < 2:
+        await message.answer("Формат: /uploadrules https://посилання")
+        return
+
+    new_rules_url = parts[1].strip()
+    if not (
+        new_rules_url.startswith("http://")
+        or new_rules_url.startswith("https://")
+    ):
+        await message.answer("Посилання має починатися з http:// або https://")
+        return
+
+    await set_chat_setting(MAIN_CHAT_ID, "rules_url", new_rules_url)
+    await message.answer("Посилання на правила оновлено.")

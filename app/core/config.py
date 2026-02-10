@@ -54,3 +54,5 @@ try:
     FAMILY_CHAT_ID = int(FAMILY_CHAT_ID_RAW)
 except ValueError as exc:
     raise RuntimeError("FAMILY_CHAT_ID must be an integer") from exc
+
+RULES_URL = "https://teletype.in/@jokerrecon/OfRules"
