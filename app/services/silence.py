@@ -9,7 +9,7 @@ from aiogram import Bot
 from aiogram.types import ChatPermissions
 
 from app.core.config import ALLOWED_CHATS, MAIN_CHAT_ID
-from app.core.db import get_chat_setting
+from app.core.db import get_chat_setting, set_chat_setting
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ SILENCE_START_TEXT = (
     "Схили голову. Подякуй. Пам’ятай."
 )
 SILENCE_END_TEXT = "Дякую! Слава Україні!"
-SILENCE_TZ = ZoneInfo("Europe/Uzhgorod")
+SILENCE_TZ = ZoneInfo("Europe/Kyiv")
 
 
 def _seconds_to_next_silence(now: datetime) -> float:
@@ -37,9 +37,22 @@ async def _is_silence_enabled() -> bool:
     return value == "1"
 
 
+async def _delete_message_later(bot: Bot, chat_id: int, message_id: int) -> None:
+    await asyncio.sleep(15 * 60)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception as exc:
+        logger.warning("silence: failed to delete message", extra={"chat_id": chat_id, "message_id": message_id, "error": str(exc)})
+
+
+def _schedule_delete_message(bot: Bot, chat_id: int, message_id: int) -> None:
+    asyncio.create_task(_delete_message_later(bot, chat_id, message_id))
+
+
 async def _start_silence(bot: Bot, chat_id: int) -> None:
     try:
-        await bot.send_message(chat_id, SILENCE_START_TEXT)
+        sent = await bot.send_message(chat_id, SILENCE_START_TEXT)
+        _schedule_delete_message(bot, chat_id, sent.message_id)
     except Exception as exc:
         logger.warning("silence: failed to send start message", extra={"chat_id": chat_id, "error": str(exc)})
 
@@ -73,7 +86,8 @@ async def _end_silence(bot: Bot, chat_id: int) -> None:
         logger.warning("silence: failed to unmute chat", extra={"chat_id": chat_id, "error": str(exc)})
 
     try:
-        await bot.send_message(chat_id, SILENCE_END_TEXT)
+        sent = await bot.send_message(chat_id, SILENCE_END_TEXT)
+        _schedule_delete_message(bot, chat_id, sent.message_id)
     except Exception as exc:
         logger.warning("silence: failed to send end message", extra={"chat_id": chat_id, "error": str(exc)})
 
@@ -84,12 +98,21 @@ async def run_silence_scheduler(bot: Bot) -> None:
         wait_seconds = _seconds_to_next_silence(now)
         await asyncio.sleep(wait_seconds)
 
+        run_now = datetime.now(SILENCE_TZ)
+        today = run_now.date().isoformat()
+
         if not await _is_silence_enabled():
             logger.info("silence: skipped (disabled)")
             continue
 
+        last_date = await get_chat_setting(MAIN_CHAT_ID, "silence_last_date")
+        if last_date == today:
+            logger.info("silence: skipped (already executed today)", extra={"date": today})
+            continue
+
         chat_ids = list(ALLOWED_CHATS.keys())
-        logger.info("silence: start", extra={"chat_count": len(chat_ids)})
+        logger.info("silence: start", extra={"chat_count": len(chat_ids), "date": today})
+        await set_chat_setting(MAIN_CHAT_ID, "silence_last_date", today)
 
         for chat_id in chat_ids:
             await _start_silence(bot, chat_id)
@@ -99,4 +122,4 @@ async def run_silence_scheduler(bot: Bot) -> None:
         for chat_id in chat_ids:
             await _end_silence(bot, chat_id)
 
-        logger.info("silence: finished", extra={"chat_count": len(chat_ids)})
+        logger.info("silence: finished", extra={"chat_count": len(chat_ids), "date": today})
