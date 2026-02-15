@@ -1,4 +1,4 @@
-"""Сервіс перевірки TikTok RSS і публікації нових відео."""
+"""Service that checks TikTok RSS and posts new video notifications."""
 
 import asyncio
 import logging
@@ -33,7 +33,7 @@ _rss_missing_logged = False
 
 
 async def fetch_latest_from_rss(rss_url: str) -> tuple[str, str] | None:
-    """Повертає (video_id, video_url) для найновішого елемента RSS."""
+    """Return (video_id, video_url) for the latest RSS entry, or None."""
 
     try:
         parsed = await asyncio.to_thread(feedparser.parse, rss_url)
@@ -61,6 +61,8 @@ async def fetch_latest_from_rss(rss_url: str) -> tuple[str, str] | None:
 
 
 async def _run_check(bot: Bot, force: bool = False) -> str:
+    """Run one check cycle and return internal status string."""
+
     global _rss_missing_logged
 
     enabled_raw = await get_chat_setting(MAIN_CHAT_ID, TIKTOK_NOTIFY_ENABLED_KEY)
@@ -120,7 +122,12 @@ async def _run_check(bot: Bot, force: bool = False) -> str:
     if thread_id is not None:
         send_kwargs["message_thread_id"] = thread_id
 
-    await bot.send_message(**send_kwargs)
+    try:
+        await bot.send_message(**send_kwargs)
+    except Exception as exc:
+        logger.exception("TikTok notify failed: %s", exc)
+        return "no_updates"
+
     await set_chat_setting(MAIN_CHAT_ID, TIKTOK_LAST_VIDEO_ID_KEY, latest_id)
 
     await bot.send_message(
@@ -132,13 +139,13 @@ async def _run_check(bot: Bot, force: bool = False) -> str:
 
 
 async def check_and_notify(bot: Bot) -> bool:
-    """Перевіряє RSS і постить нове відео, якщо воно з'явилось."""
+    """Check RSS and post a new video message if found."""
 
     status = await _run_check(bot, force=False)
     return status == "posted"
 
 
 async def force_check(bot: Bot) -> str:
-    """Форсована перевірка для адмінської команди."""
+    """Forced one-off check for admin command."""
 
     return await _run_check(bot, force=True)
