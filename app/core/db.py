@@ -90,6 +90,38 @@ async def init_db() -> None:
                 revoked_at INTEGER,
                 revoked_by INTEGER
             );
+            CREATE TABLE IF NOT EXISTS candidates (
+                user_id INTEGER NOT NULL,
+                reception_chat_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'candidate',
+                created_at INTEGER NOT NULL,
+                review_due_at INTEGER NOT NULL,
+                wait_count INTEGER NOT NULL DEFAULT 0,
+                last_buttons_msg_id INTEGER,
+                reviewed_by INTEGER,
+                reviewed_at INTEGER,
+                invite_link TEXT,
+                UNIQUE(user_id, reception_chat_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_candidates_status_due
+                ON candidates (status, review_due_at);
+            CREATE INDEX IF NOT EXISTS idx_candidates_user_id
+                ON candidates (user_id);
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_type TEXT NOT NULL,
+                run_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                chat_id INTEGER,
+                user_id INTEGER,
+                payload_json TEXT,
+                tries INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status_run_at
+                ON scheduled_tasks (status, run_at);
             """
         )
         await _ensure_warnings_schema(db)
@@ -388,3 +420,287 @@ async def find_user_by_username(
             return int(row[0]), None, None, row[3]
 
         return None
+
+
+def _candidate_from_row(row: tuple) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "user_id": int(row[0]),
+        "reception_chat_id": int(row[1]),
+        "status": str(row[2]),
+        "created_at": int(row[3]),
+        "review_due_at": int(row[4]),
+        "wait_count": int(row[5]),
+        "last_buttons_msg_id": row[6],
+        "reviewed_by": row[7],
+        "reviewed_at": row[8],
+        "invite_link": row[9],
+    }
+
+
+async def upsert_candidate_on_join(
+    user_id: int,
+    reception_chat_id: int,
+    review_due_at: int,
+) -> None:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO candidates (
+                user_id,
+                reception_chat_id,
+                status,
+                created_at,
+                review_due_at,
+                wait_count,
+                last_buttons_msg_id,
+                reviewed_by,
+                reviewed_at,
+                invite_link
+            )
+            VALUES (?, ?, 'candidate', ?, ?, 0, NULL, NULL, NULL, NULL)
+            ON CONFLICT(user_id, reception_chat_id) DO UPDATE SET
+                status='candidate',
+                review_due_at=excluded.review_due_at,
+                last_buttons_msg_id=NULL,
+                reviewed_by=NULL,
+                reviewed_at=NULL,
+                invite_link=NULL
+            """,
+            (user_id, reception_chat_id, now, review_due_at),
+        )
+        await db.commit()
+
+
+async def get_candidate(user_id: int, reception_chat_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            SELECT
+                user_id,
+                reception_chat_id,
+                status,
+                created_at,
+                review_due_at,
+                wait_count,
+                last_buttons_msg_id,
+                reviewed_by,
+                reviewed_at,
+                invite_link
+            FROM candidates
+            WHERE user_id=? AND reception_chat_id=?
+            """,
+            (user_id, reception_chat_id),
+        )
+        row = await cur.fetchone()
+        return _candidate_from_row(row)
+
+
+async def get_candidate_in_any_chat(user_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            SELECT
+                user_id,
+                reception_chat_id,
+                status,
+                created_at,
+                review_due_at,
+                wait_count,
+                last_buttons_msg_id,
+                reviewed_by,
+                reviewed_at,
+                invite_link
+            FROM candidates
+            WHERE user_id=?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return _candidate_from_row(row)
+
+
+async def update_candidate_status(
+    user_id: int,
+    reception_chat_id: int,
+    status: str,
+    reviewed_by: int | None = None,
+    reviewed_at: int | None = None,
+    invite_link: str | None = None,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE candidates
+            SET status=?,
+                reviewed_by=COALESCE(?, reviewed_by),
+                reviewed_at=COALESCE(?, reviewed_at),
+                invite_link=COALESCE(?, invite_link)
+            WHERE user_id=? AND reception_chat_id=?
+            """,
+            (status, reviewed_by, reviewed_at, invite_link, user_id, reception_chat_id),
+        )
+        await db.commit()
+
+
+async def postpone_candidate_review(
+    user_id: int,
+    reception_chat_id: int,
+    review_due_at: int,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE candidates
+            SET review_due_at=?, wait_count=wait_count+1
+            WHERE user_id=? AND reception_chat_id=?
+            """,
+            (review_due_at, user_id, reception_chat_id),
+        )
+        await db.commit()
+
+
+async def set_candidate_buttons_message(
+    user_id: int,
+    reception_chat_id: int,
+    message_id: int | None,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE candidates
+            SET last_buttons_msg_id=?
+            WHERE user_id=? AND reception_chat_id=?
+            """,
+            (message_id, user_id, reception_chat_id),
+        )
+        await db.commit()
+
+
+async def schedule_task(
+    task_type: str,
+    run_at: int,
+    chat_id: int | None = None,
+    user_id: int | None = None,
+    payload_json: str | None = None,
+) -> int:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO scheduled_tasks (
+                task_type,
+                run_at,
+                status,
+                chat_id,
+                user_id,
+                payload_json,
+                tries,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, 'pending', ?, ?, ?, 0, ?, ?)
+            """,
+            (task_type, run_at, chat_id, user_id, payload_json, now, now),
+        )
+        await db.commit()
+        return int(cur.lastrowid)
+
+
+async def cancel_pending_tasks(
+    task_type: str,
+    chat_id: int | None = None,
+    user_id: int | None = None,
+) -> int:
+    conditions = ["task_type=?", "status='pending'"]
+    params: list[int | str] = [task_type]
+    if chat_id is not None:
+        conditions.append("chat_id=?")
+        params.append(chat_id)
+    if user_id is not None:
+        conditions.append("user_id=?")
+        params.append(user_id)
+
+    now = int(time.time())
+    query = f"""
+        UPDATE scheduled_tasks
+        SET status='cancelled', updated_at=?
+        WHERE {' AND '.join(conditions)}
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(query, (now, *params))
+        await db.commit()
+        return cur.rowcount
+
+
+async def fetch_due_tasks(limit: int = 20) -> list[dict]:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            SELECT id, task_type, run_at, status, chat_id, user_id, payload_json, tries
+            FROM scheduled_tasks
+            WHERE status='pending' AND run_at<=?
+            ORDER BY run_at ASC, id ASC
+            LIMIT ?
+            """,
+            (now, limit),
+        )
+        rows = await cur.fetchall()
+
+    return [
+        {
+            "id": int(row[0]),
+            "task_type": str(row[1]),
+            "run_at": int(row[2]),
+            "status": str(row[3]),
+            "chat_id": row[4],
+            "user_id": row[5],
+            "payload_json": row[6],
+            "tries": int(row[7]),
+        }
+        for row in rows
+    ]
+
+
+async def mark_task_running(task_id: int) -> bool:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE scheduled_tasks
+            SET status='running', tries=tries+1, updated_at=?
+            WHERE id=? AND status='pending'
+            """,
+            (now, task_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def mark_task_done(task_id: int) -> None:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE scheduled_tasks SET status='done', updated_at=? WHERE id=?",
+            (now, task_id),
+        )
+        await db.commit()
+
+
+async def mark_task_failed(task_id: int, error_text: str) -> None:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE scheduled_tasks
+            SET status='failed', last_error=?, updated_at=?
+            WHERE id=?
+            """,
+            (error_text[:1000], now, task_id),
+        )
+        await db.commit()

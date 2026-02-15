@@ -16,9 +16,11 @@ from app.handlers.collect_members import router as collect_router
 from app.handlers.ping import router as ping_router
 from app.handlers.start import router as start_router
 from app.handlers.welcome import router as welcome_router
+from app.handlers.invite import router as invite_router
 from app.handlers.predict import router as predict_router
 from app.handlers.warnings import router as warnings_router
 from app.services.silence import run_silence_scheduler
+from app.services.db_scheduler import run_db_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 ROUTERS = (
     chat_guard_router,  # має бути першим в списку
     welcome_router,
+    invite_router,
     predict_router,
     start_router,
     chatid_router,
@@ -65,10 +68,12 @@ async def main() -> None:
     )
 
     silence_task = asyncio.create_task(run_silence_scheduler(bot))
+    db_sched_task = asyncio.create_task(run_db_scheduler(bot))
     try:
         await dp.start_polling(bot)
     finally:
         silence_task.cancel()
+        db_sched_task.cancel()
 
 
 if __name__ == "__main__":
