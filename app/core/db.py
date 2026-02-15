@@ -22,14 +22,10 @@ async def _ensure_warnings_schema(db: aiosqlite.Connection) -> None:
     columns = {row[1] for row in await cursor.fetchall()}
 
     if "user_username_snapshot" not in columns:
-        await db.execute(
-            "ALTER TABLE warnings ADD COLUMN user_username_snapshot TEXT"
-        )
+        await db.execute("ALTER TABLE warnings ADD COLUMN user_username_snapshot TEXT")
 
     if "admin_username_snapshot" not in columns:
-        await db.execute(
-            "ALTER TABLE warnings ADD COLUMN admin_username_snapshot TEXT"
-        )
+        await db.execute("ALTER TABLE warnings ADD COLUMN admin_username_snapshot TEXT")
 
     await db.execute(
         """
@@ -294,11 +290,7 @@ async def update_admin_profile(
         return cursor.rowcount > 0
 
 
-async def set_chat_setting(
-    chat_id: int,
-    key: str,
-    value: str
-    ) -> None:
+async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
     """Зберігає або оновлює налаштування чату за ключем."""
 
     now = int(time.time())
@@ -327,6 +319,7 @@ async def get_chat_setting(chat_id: int, key: str) -> str | None:
         row = await cursor.fetchone()
         return str(row[0]) if row else None
 
+
 async def find_user_id_by_username_snapshot(username: str) -> int | None:
     """Шукає user_id за збереженим username у таблиці warnings.
 
@@ -349,14 +342,18 @@ async def find_user_id_by_username_snapshot(username: str) -> int | None:
         row = await cur.fetchone()
         return int(row[0]) if row else None
 
+
 async def find_user_by_username(
     username: str,
-) -> tuple[
-    int,
-    str | None,
-    str | None,
-    str | None,
-] | None:
+) -> (
+    tuple[
+        int,
+        str | None,
+        str | None,
+        str | None,
+    ]
+    | None
+):
     """Шукає користувача по username в локальній БД.
 
     Джерела (в пріоритеті):
@@ -464,6 +461,7 @@ async def upsert_candidate_on_join(
             ON CONFLICT(user_id, reception_chat_id) DO UPDATE SET
                 status='candidate',
                 review_due_at=excluded.review_due_at,
+                wait_count=0,
                 last_buttons_msg_id=NULL,
                 reviewed_by=NULL,
                 reviewed_at=NULL,
@@ -673,7 +671,7 @@ async def mark_task_running(task_id: int) -> bool:
         cur = await db.execute(
             """
             UPDATE scheduled_tasks
-            SET status='running', tries=tries+1, updated_at=?
+            SET status='running', updated_at=?
             WHERE id=? AND status='pending'
             """,
             (now, task_id),
@@ -698,9 +696,14 @@ async def mark_task_failed(task_id: int, error_text: str) -> None:
         await db.execute(
             """
             UPDATE scheduled_tasks
-            SET status='failed', last_error=?, updated_at=?
+            SET
+                tries=tries+1,
+                status=CASE WHEN tries+1 < 3 THEN 'pending' ELSE 'failed' END,
+                run_at=CASE WHEN tries+1 < 3 THEN ? + (30 * (tries+1)) ELSE run_at END,
+                last_error=?,
+                updated_at=?
             WHERE id=?
             """,
-            (error_text[:1000], now, task_id),
+            (now, error_text[:1000], now, task_id),
         )
         await db.commit()

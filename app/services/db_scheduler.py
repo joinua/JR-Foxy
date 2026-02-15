@@ -30,11 +30,19 @@ LEFT_RECEPTION_TEXT = "Не дочекавшись свого зіркового
 
 def _review_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="Прийняти", callback_data=f"inv:accept:{user_id}"),
-            InlineKeyboardButton(text="Чекати", callback_data=f"inv:wait:{user_id}"),
-            InlineKeyboardButton(text="Відмовити", callback_data=f"inv:reject:{user_id}"),
-        ]]
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Прийняти", callback_data=f"inv:accept:{user_id}"
+                ),
+                InlineKeyboardButton(
+                    text="Чекати", callback_data=f"inv:wait:{user_id}"
+                ),
+                InlineKeyboardButton(
+                    text="Відмовити", callback_data=f"inv:reject:{user_id}"
+                ),
+            ]
+        ]
     )
 
 

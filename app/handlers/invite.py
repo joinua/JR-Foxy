@@ -5,7 +5,13 @@ from html import escape
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery, User
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    CallbackQuery,
+    User,
+)
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from app.core.config import ADMIN_LOG_CHAT_ID, INVITE_CHAT_ID, MAIN_CHAT_ID
@@ -28,7 +34,7 @@ INVITE_WELCOME_TEXT = (
     "А за лаштунками все готується до твого прийняття в клан. Як тільки хтось "
     "з адміністрації звільниться - ви поспілкуєтеся, а поки напиши нам: звідки "
     "ти, скільки років, в якому клані був до і як дізнався про нас. Буде класно, "
-    "коли ми найдемо наш \"конект\"."
+    'коли ми найдемо наш "конект".'
 )
 
 ADMIN_LOG_NEW_CANDIDATE_TEXT = (
@@ -56,9 +62,15 @@ def _build_review_keyboard(candidate_user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Прийняти", callback_data=f"inv:accept:{candidate_user_id}"),
-                InlineKeyboardButton(text="Чекати", callback_data=f"inv:wait:{candidate_user_id}"),
-                InlineKeyboardButton(text="Відмовити", callback_data=f"inv:reject:{candidate_user_id}"),
+                InlineKeyboardButton(
+                    text="Прийняти", callback_data=f"inv:accept:{candidate_user_id}"
+                ),
+                InlineKeyboardButton(
+                    text="Чекати", callback_data=f"inv:wait:{candidate_user_id}"
+                ),
+                InlineKeyboardButton(
+                    text="Відмовити", callback_data=f"inv:reject:{candidate_user_id}"
+                ),
             ]
         ]
     )
@@ -82,7 +94,9 @@ async def show_candidate_buttons(message: Message, candidate_user_id: int) -> No
         REVIEW_BUTTONS_TEXT,
         reply_markup=_build_review_keyboard(candidate_user_id),
     )
-    await set_candidate_buttons_message(candidate_user_id, INVITE_CHAT_ID, sent.message_id)
+    await set_candidate_buttons_message(
+        candidate_user_id, INVITE_CHAT_ID, sent.message_id
+    )
 
 
 @router.message(F.chat.id == INVITE_CHAT_ID, F.new_chat_members)
@@ -96,7 +110,9 @@ async def on_candidate_join_reception(message: Message) -> None:
             reception_chat_id=INVITE_CHAT_ID,
             review_due_at=review_due_at,
         )
-        await cancel_pending_tasks("invite_review_due", chat_id=INVITE_CHAT_ID, user_id=user.id)
+        await cancel_pending_tasks(
+            "invite_review_due", chat_id=INVITE_CHAT_ID, user_id=user.id
+        )
         await schedule_task(
             task_type="invite_review_due",
             run_at=review_due_at,
@@ -109,7 +125,13 @@ async def on_candidate_join_reception(message: Message) -> None:
             ADMIN_LOG_CHAT_ID,
             ADMIN_LOG_NEW_CANDIDATE_TEXT,
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Відкрити Приймальню", url="https://t.me/invite_jr")]]
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Відкрити Приймальню", url="https://t.me/invite_jr"
+                        )
+                    ]
+                ]
             ),
         )
 
@@ -128,7 +150,9 @@ async def force_candidate_review(message: Message) -> None:
     candidate_user = message.reply_to_message.from_user
     candidate = await get_candidate(candidate_user.id, INVITE_CHAT_ID)
     if not candidate:
-        await message.answer("Використайте цю команду на кандидата, а не простого перехожого")
+        await message.answer(
+            "Використайте цю команду на кандидата, а не простого перехожого"
+        )
         return
 
     if candidate["status"] != "candidate":
@@ -136,7 +160,9 @@ async def force_candidate_review(message: Message) -> None:
         return
 
     await show_candidate_buttons(message, candidate_user.id)
-    await cancel_pending_tasks("invite_review_due", chat_id=INVITE_CHAT_ID, user_id=candidate_user.id)
+    await cancel_pending_tasks(
+        "invite_review_due", chat_id=INVITE_CHAT_ID, user_id=candidate_user.id
+    )
 
 
 @router.callback_query(F.data.startswith("inv:"))
@@ -150,11 +176,17 @@ async def on_invite_callback(query: CallbackQuery) -> None:
         await query.answer("Слухаюся лише адміністраторів", show_alert=True)
         return
 
-    _, action, raw_user_id = (query.data or "").split(":", 2)
-    candidate_user_id = int(raw_user_id)
+    try:
+        _, action, raw_user_id = (query.data or "").split(":", 2)
+        candidate_user_id = int(raw_user_id)
+    except (ValueError, TypeError):
+        await query.answer()
+        return
     candidate = await get_candidate(candidate_user_id, INVITE_CHAT_ID)
     if not candidate or candidate["status"] != "candidate":
-        await query.answer("Немає тіла, немає діла! Кандидат уже не кандидат.", show_alert=True)
+        await query.answer(
+            "Немає тіла, немає діла! Кандидат уже не кандидат.", show_alert=True
+        )
         return
 
     reviewed_at = int(time.time())
@@ -167,7 +199,9 @@ async def on_invite_callback(query: CallbackQuery) -> None:
                 member_limit=1,
             )
         except (TelegramBadRequest, TelegramForbiddenError):
-            await query.message.answer("Не маю права створити інвайт-лінк у головний чат. Допоможіть!")
+            await query.message.answer(
+                "Не маю права створити інвайт-лінк у головний чат. Допоможіть!"
+            )
             await query.answer()
             return
 
@@ -191,7 +225,9 @@ async def on_invite_callback(query: CallbackQuery) -> None:
         )
 
         try:
-            chat_member = await query.bot.get_chat_member(INVITE_CHAT_ID, candidate_user_id)
+            chat_member = await query.bot.get_chat_member(
+                INVITE_CHAT_ID, candidate_user_id
+            )
             candidate_user = chat_member.user
         except Exception:
             candidate_user = None
@@ -204,7 +240,13 @@ async def on_invite_callback(query: CallbackQuery) -> None:
             f"{mention}, ось твоє посилання на наш офіційний чат.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Посилання в чат", url=invite.invite_link)]]
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Посилання в чат", url=invite.invite_link
+                        )
+                    ]
+                ]
             ),
         )
 
@@ -222,7 +264,9 @@ async def on_invite_callback(query: CallbackQuery) -> None:
         try:
             await query.bot.ban_chat_member(INVITE_CHAT_ID, candidate_user_id)
         except (TelegramBadRequest, TelegramForbiddenError):
-            await query.message.answer("Не можу кікати людей. Виправіть додатковими дозволами")
+            await query.message.answer(
+                "Не можу кікати людей. Виправіть додатковими дозволами"
+            )
             await query.answer()
             return
 
@@ -249,7 +293,9 @@ async def on_invite_callback(query: CallbackQuery) -> None:
     elif action == "wait":
         new_due = int(time.time()) + 36 * 60 * 60
         await postpone_candidate_review(candidate_user_id, INVITE_CHAT_ID, new_due)
-        await cancel_pending_tasks("invite_review_due", chat_id=INVITE_CHAT_ID, user_id=candidate_user_id)
+        await cancel_pending_tasks(
+            "invite_review_due", chat_id=INVITE_CHAT_ID, user_id=candidate_user_id
+        )
         await schedule_task(
             task_type="invite_review_due",
             run_at=new_due,
@@ -257,6 +303,9 @@ async def on_invite_callback(query: CallbackQuery) -> None:
             user_id=candidate_user_id,
         )
         await query.message.edit_text(WAIT_DONE_TEXT, reply_markup=None)
+    else:
+        await query.answer()
+        return
 
     await query.answer()
 
@@ -271,7 +320,9 @@ async def on_candidate_join_main_chat(message: Message) -> None:
         if candidate["status"] not in {"candidate", "invited"}:
             continue
 
-        await update_candidate_status(user.id, candidate["reception_chat_id"], "accepted")
+        await update_candidate_status(
+            user.id, candidate["reception_chat_id"], "accepted"
+        )
         await cancel_pending_tasks(
             "invite_review_due",
             chat_id=candidate["reception_chat_id"],
