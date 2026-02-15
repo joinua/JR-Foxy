@@ -698,8 +698,8 @@ async def mark_task_failed(task_id: int, error_text: str) -> None:
             UPDATE scheduled_tasks
             SET
                 tries=tries+1,
-                status=CASE WHEN tries+1 < 3 THEN 'pending' ELSE 'failed' END,
-                run_at=CASE WHEN tries+1 < 3 THEN ? + (30 * (tries+1)) ELSE run_at END,
+                status=CASE WHEN tries+1 <= 3 THEN 'pending' ELSE 'failed' END,
+                run_at=CASE WHEN tries+1 <= 3 THEN ? + (30 * (tries+1)) ELSE run_at END,
                 last_error=?,
                 updated_at=?
             WHERE id=?

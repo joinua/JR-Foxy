@@ -159,10 +159,10 @@ async def force_candidate_review(message: Message) -> None:
         await message.answer("Немає тіла, немає діла! Кандидат уже не кандидат.")
         return
 
-    await show_candidate_buttons(message, candidate_user.id)
     await cancel_pending_tasks(
         "invite_review_due", chat_id=INVITE_CHAT_ID, user_id=candidate_user.id
     )
+    await show_candidate_buttons(message, candidate_user.id)
 
 
 @router.callback_query(F.data.startswith("inv:"))
