@@ -60,7 +60,7 @@ async def tiktok_set_thread_handler(message: Message) -> None:
     thread_id = message.message_thread_id
     if thread_id is None:
         await message.answer(
-            "❌ Це не форум-тема. Відкрий тему “Тік-Ток” і повтори команду."
+            "❌ Це не форум-тема. Відкрий тему 'Тік-Ток' і повтори команду."
         )
         return
 
