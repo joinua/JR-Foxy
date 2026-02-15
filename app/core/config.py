@@ -35,6 +35,18 @@ WRONG_CHAT_TEXT = (
 
 MAIN_CHAT_ID = -1002551613807
 
+INVITE_CHAT_ID_RAW = os.getenv("INVITE_CHAT_ID")
+
+if not INVITE_CHAT_ID_RAW:
+    raise RuntimeError("INVITE_CHAT_ID not set in .env")
+
+try:
+    INVITE_CHAT_ID = int(INVITE_CHAT_ID_RAW)
+except ValueError as exc:
+    raise RuntimeError("INVITE_CHAT_ID must be an integer") from exc
+
+ALLOWED_CHATS[INVITE_CHAT_ID] = "Приймальня JR"
+
 ADMIN_LOG_CHAT_ID_RAW = os.getenv("ADMIN_LOG_CHAT_ID")
 
 if not ADMIN_LOG_CHAT_ID_RAW:
