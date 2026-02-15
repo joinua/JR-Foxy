@@ -9,6 +9,7 @@ from app.middlewares.chat_guard import ChatGuardMiddleware
 from app.routers.chat_guard import router as chat_guard_router
 
 from app.handlers.admin import router as admin_router
+from app.handlers.admin_tiktok import router as admin_tiktok_router
 from app.handlers.call import router as call_router
 from app.handlers.broadcast import router as broadcast_router
 from app.handlers.chatid import router as chatid_router
@@ -20,7 +21,7 @@ from app.handlers.invite import router as invite_router
 from app.handlers.predict import router as predict_router
 from app.handlers.warnings import router as warnings_router
 from app.services.silence import run_silence_scheduler
-from app.services.db_scheduler import run_db_scheduler
+from app.services.db_scheduler import register_tiktok_task, run_db_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ ROUTERS = (
     chatid_router,
     ping_router,
     admin_router,
+    admin_tiktok_router,
     broadcast_router,
     call_router,
     collect_router,
@@ -60,6 +62,7 @@ async def main() -> None:
     await init_db()
     await add_admin(BOT_OWNER_ID)
     await set_admin_level(BOT_OWNER_ID, 4)
+    await register_tiktok_task()
 
     me = await bot.get_me()
     logger.info(

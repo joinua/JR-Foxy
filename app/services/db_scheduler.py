@@ -2,12 +2,13 @@
 
 import asyncio
 import logging
+import time
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.core.config import INVITE_CHAT_ID
+from app.core.config import INVITE_CHAT_ID, TIKTOK_CHECK_INTERVAL_SECONDS
 from app.core.db import (
     fetch_due_tasks,
     get_candidate,
@@ -15,7 +16,11 @@ from app.core.db import (
     mark_task_failed,
     mark_task_running,
     set_candidate_buttons_message,
+    schedule_task,
+    cancel_pending_tasks,
 )
+
+from app.services.tiktok_watcher import check_and_notify
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,20 @@ REVIEW_BUTTONS_TEXT = (
 )
 
 LEFT_RECEPTION_TEXT = "Не дочекавшись свого зіркового часу - прибульці полетіли далі"
+
+
+async def register_tiktok_task() -> None:
+    """Реєструє або оновлює періодичну задачу перевірки TikTok."""
+
+    await cancel_pending_tasks("tiktok_check")
+    run_at = int(time.time()) + TIKTOK_CHECK_INTERVAL_SECONDS
+    await schedule_task(task_type="tiktok_check", run_at=run_at)
+
+
+async def _handle_tiktok_check(bot: Bot) -> None:
+    await check_and_notify(bot)
+    run_at = int(time.time()) + TIKTOK_CHECK_INTERVAL_SECONDS
+    await schedule_task(task_type="tiktok_check", run_at=run_at)
 
 
 def _review_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -84,6 +103,8 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
             try:
                 if task["task_type"] == "invite_review_due":
                     await _handle_invite_review_due(bot, task)
+                elif task["task_type"] == "tiktok_check":
+                    await _handle_tiktok_check(bot)
                 await mark_task_done(task_id)
             except Exception as exc:
                 logger.exception("db scheduler task failed", extra={"task_id": task_id})

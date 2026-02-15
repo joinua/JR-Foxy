@@ -68,3 +68,30 @@ except ValueError as exc:
     raise RuntimeError("FAMILY_CHAT_ID must be an integer") from exc
 
 RULES_URL = "https://teletype.in/@jokerrecon/OfRules"
+
+TIKTOK_PROFILE_URL = os.getenv("TIKTOK_PROFILE_URL", "https://www.tiktok.com/@jr__ua")
+
+TIKTOK_CHECK_INTERVAL_SECONDS_RAW = os.getenv(
+    "TIKTOK_CHECK_INTERVAL_SECONDS", "3600"
+)
+try:
+    TIKTOK_CHECK_INTERVAL_SECONDS = int(TIKTOK_CHECK_INTERVAL_SECONDS_RAW)
+except ValueError as exc:
+    raise RuntimeError("TIKTOK_CHECK_INTERVAL_SECONDS must be an integer") from exc
+
+if TIKTOK_CHECK_INTERVAL_SECONDS <= 0:
+    raise RuntimeError("TIKTOK_CHECK_INTERVAL_SECONDS must be positive")
+
+TIKTOK_NOTIFY_ENABLED_RAW = os.getenv("TIKTOK_NOTIFY_ENABLED", "true").strip().lower()
+TIKTOK_NOTIFY_ENABLED = TIKTOK_NOTIFY_ENABLED_RAW in {"1", "true", "yes", "on"}
+
+TIKTOK_THREAD_ID_RAW = os.getenv("TIKTOK_THREAD_ID", "").strip()
+if TIKTOK_THREAD_ID_RAW:
+    try:
+        TIKTOK_THREAD_ID = int(TIKTOK_THREAD_ID_RAW)
+    except ValueError as exc:
+        raise RuntimeError("TIKTOK_THREAD_ID must be an integer") from exc
+else:
+    TIKTOK_THREAD_ID = None
+
+TIKTOK_RSS_URL = os.getenv("TIKTOK_RSS_URL", "").strip()
