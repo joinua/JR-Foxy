@@ -1,5 +1,6 @@
 """Логіка прийому кандидатів у чаті Приймальні JR."""
 
+import logging
 import time
 from html import escape
 
@@ -20,14 +21,17 @@ from app.core.db import (
     get_admin_level,
     get_candidate,
     get_candidate_in_any_chat,
+    get_candidate_invite_message,
     postpone_candidate_review,
     schedule_task,
     set_candidate_buttons_message,
+    set_candidate_invite_message,
     update_candidate_status,
     upsert_candidate_on_join,
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 INVITE_WELCOME_TEXT = (
     "Привіт! Цей чат - місце нашого першого знайомства з адміністрацією клану. "
@@ -163,6 +167,7 @@ async def force_candidate_review(message: Message) -> None:
         "invite_review_due", chat_id=INVITE_CHAT_ID, user_id=candidate_user.id
     )
     await show_candidate_buttons(message, candidate_user.id)
+    return
 
 
 @router.callback_query(F.data.startswith("inv:"))
@@ -236,7 +241,7 @@ async def on_invite_callback(query: CallbackQuery) -> None:
         if candidate_user:
             mention = _user_mention(candidate_user)
 
-        await query.message.answer(
+        invite_message = await query.message.answer(
             f"{mention}, ось твоє посилання на наш офіційний чат.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
@@ -248,6 +253,11 @@ async def on_invite_callback(query: CallbackQuery) -> None:
                     ]
                 ]
             ),
+        )
+        await set_candidate_invite_message(
+            candidate_user_id,
+            INVITE_CHAT_ID,
+            invite_message.message_id,
         )
 
         label = str(candidate_user_id)
@@ -323,13 +333,37 @@ async def on_candidate_join_main_chat(message: Message) -> None:
         await update_candidate_status(
             user.id, candidate["reception_chat_id"], "accepted"
         )
+
+        invite_message_id = await get_candidate_invite_message(
+            user.id,
+            candidate["reception_chat_id"],
+        )
+        if invite_message_id is not None:
+            try:
+                await message.bot.delete_message(INVITE_CHAT_ID, invite_message_id)
+                await set_candidate_invite_message(
+                    user.id,
+                    candidate["reception_chat_id"],
+                    None,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete invite message for user %s: %s",
+                    user.id,
+                    exc,
+                )
+
+        try:
+            await message.bot.ban_chat_member(INVITE_CHAT_ID, user.id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to kick user %s from invite chat: %s",
+                user.id,
+                exc,
+            )
+
         await cancel_pending_tasks(
             "invite_review_due",
             chat_id=candidate["reception_chat_id"],
             user_id=user.id,
         )
-
-        try:
-            await message.bot.ban_chat_member(candidate["reception_chat_id"], user.id)
-        except Exception:
-            continue
