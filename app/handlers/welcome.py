@@ -12,6 +12,8 @@ from aiogram.types import (
 
 from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID, RULES_URL
 from app.core.db import (
+    RULES_URL_KEY,
+    WELCOME_HTML_KEY,
     ensure_clan_member,
     get_admin_level,
     get_chat_setting,
@@ -60,7 +62,7 @@ def mention_html(user) -> str:
 async def on_new_members(message: Message):
     """Вітає нових учасників у головному чаті та зберігає дату входу."""
 
-    custom_rules_url = await get_chat_setting(MAIN_CHAT_ID, "rules_url")
+    custom_rules_url = await get_chat_setting(MAIN_CHAT_ID, RULES_URL_KEY)
     rules_url = (custom_rules_url or RULES_URL).strip()
 
     kb = InlineKeyboardMarkup(
@@ -81,8 +83,8 @@ async def on_new_members(message: Message):
         await ensure_clan_member(user.id, joined_at)
 
         # 2) вітання + кнопка з посиланням
-        custom = await get_chat_setting(MAIN_CHAT_ID, "welcome_html")
-        template = custom or DEFAULT_WELCOME_HTML
+        custom = await get_chat_setting(MAIN_CHAT_ID, WELCOME_HTML_KEY)
+        template = custom if custom is not None else DEFAULT_WELCOME_HTML
         text = template.format(mention=mention_html(user))
 
         await message.answer(
@@ -127,9 +129,17 @@ async def upload_welcome(message: Message):
 
     await set_chat_setting(
         MAIN_CHAT_ID,
-        "welcome_html",
+        WELCOME_HTML_KEY,
         new_template,
     )
+
+    saved_template = await get_chat_setting(MAIN_CHAT_ID, WELCOME_HTML_KEY)
+    if saved_template != new_template:
+        await message.answer(
+            "Помилка збереження вітального повідомлення. Спробуй ще раз."
+        )
+        return
+
     await message.answer("Вітальне повідомлення оновлено.")
 
 
@@ -158,5 +168,5 @@ async def upload_rules(message: Message):
         await message.answer("Посилання має починатися з http:// або https://")
         return
 
-    await set_chat_setting(MAIN_CHAT_ID, "rules_url", new_rules_url)
+    await set_chat_setting(MAIN_CHAT_ID, RULES_URL_KEY, new_rules_url)
     await message.answer("Посилання на правила оновлено.")
