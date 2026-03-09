@@ -37,6 +37,18 @@ async def _ensure_warnings_schema(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _ensure_candidates_schema(db: aiosqlite.Connection) -> None:
+    """Гарантує актуальну схему таблиці `candidates` без втрати даних."""
+
+    cursor = await db.execute("PRAGMA table_info(candidates)")
+    columns = {row[1] for row in await cursor.fetchall()}
+
+    if "invite_message_id" not in columns:
+        await db.execute(
+            "ALTER TABLE candidates ADD COLUMN invite_message_id INTEGER"
+        )
+
+
 async def init_db() -> None:
     """Ініціалізує базу даних та створює таблиці, якщо їх ще немає."""
 
@@ -99,6 +111,7 @@ async def init_db() -> None:
                 reviewed_by INTEGER,
                 reviewed_at INTEGER,
                 invite_link TEXT,
+                invite_message_id INTEGER,
                 UNIQUE(user_id, reception_chat_id)
             );
             CREATE INDEX IF NOT EXISTS idx_candidates_status_due
@@ -123,6 +136,7 @@ async def init_db() -> None:
             """
         )
         await _ensure_warnings_schema(db)
+        await _ensure_candidates_schema(db)
         await db.commit()
 
 
@@ -437,6 +451,7 @@ def _candidate_from_row(row: tuple) -> dict | None:
         "reviewed_by": row[7],
         "reviewed_at": row[8],
         "invite_link": row[9],
+        "invite_message_id": row[10],
     }
 
 
@@ -459,9 +474,10 @@ async def upsert_candidate_on_join(
                 last_buttons_msg_id,
                 reviewed_by,
                 reviewed_at,
-                invite_link
+                invite_link,
+                invite_message_id
             )
-            VALUES (?, ?, 'candidate', ?, ?, 0, NULL, NULL, NULL, NULL)
+            VALUES (?, ?, 'candidate', ?, ?, 0, NULL, NULL, NULL, NULL, NULL)
             ON CONFLICT(user_id, reception_chat_id) DO UPDATE SET
                 status='candidate',
                 review_due_at=excluded.review_due_at,
@@ -469,7 +485,8 @@ async def upsert_candidate_on_join(
                 last_buttons_msg_id=NULL,
                 reviewed_by=NULL,
                 reviewed_at=NULL,
-                invite_link=NULL
+                invite_link=NULL,
+                invite_message_id=NULL
             """,
             (user_id, reception_chat_id, now, review_due_at),
         )
@@ -490,7 +507,8 @@ async def get_candidate(user_id: int, reception_chat_id: int) -> dict | None:
                 last_buttons_msg_id,
                 reviewed_by,
                 reviewed_at,
-                invite_link
+                invite_link,
+                invite_message_id
             FROM candidates
             WHERE user_id=? AND reception_chat_id=?
             """,
@@ -514,7 +532,8 @@ async def get_candidate_in_any_chat(user_id: int) -> dict | None:
                 last_buttons_msg_id,
                 reviewed_by,
                 reviewed_at,
-                invite_link
+                invite_link,
+                invite_message_id
             FROM candidates
             WHERE user_id=?
             ORDER BY created_at DESC
@@ -581,6 +600,42 @@ async def set_candidate_buttons_message(
             (message_id, user_id, reception_chat_id),
         )
         await db.commit()
+
+
+async def set_candidate_invite_message(
+    user_id: int,
+    reception_chat_id: int,
+    message_id: int | None,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE candidates
+            SET invite_message_id=?
+            WHERE user_id=? AND reception_chat_id=?
+            """,
+            (message_id, user_id, reception_chat_id),
+        )
+        await db.commit()
+
+
+async def get_candidate_invite_message(
+    user_id: int,
+    reception_chat_id: int,
+) -> int | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            SELECT invite_message_id
+            FROM candidates
+            WHERE user_id=? AND reception_chat_id=?
+            """,
+            (user_id, reception_chat_id),
+        )
+        row = await cur.fetchone()
+        if not row or row[0] is None:
+            return None
+        return int(row[0])
 
 
 async def schedule_task(
