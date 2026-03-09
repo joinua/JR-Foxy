@@ -6,6 +6,8 @@ import time
 import aiosqlite
 
 DB_PATH = Path("data") / "jrfoxy.db"
+WELCOME_HTML_KEY = "welcome_html"
+RULES_URL_KEY = "rules_url"
 
 
 async def _ensure_warnings_schema(db: aiosqlite.Connection) -> None:
@@ -294,6 +296,7 @@ async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
     """Зберігає або оновлює налаштування чату за ключем."""
 
     now = int(time.time())
+    normalized_chat_id = int(chat_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -303,7 +306,7 @@ async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
                 value=excluded.value,
                 updated_at=excluded.updated_at
             """,
-            (chat_id, key, value, now),
+            (normalized_chat_id, key, value, now),
         )
         await db.commit()
 
@@ -311,10 +314,11 @@ async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
 async def get_chat_setting(chat_id: int, key: str) -> str | None:
     """Повертає значення налаштування чату або None, якщо ключ відсутній."""
 
+    normalized_chat_id = int(chat_id)
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT value FROM chat_settings WHERE chat_id=? AND key=?",
-            (chat_id, key),
+            (normalized_chat_id, key),
         )
         row = await cursor.fetchone()
         return str(row[0]) if row else None
