@@ -167,6 +167,7 @@ async def force_candidate_review(message: Message) -> None:
         "invite_review_due", chat_id=INVITE_CHAT_ID, user_id=candidate_user.id
     )
     await show_candidate_buttons(message, candidate_user.id)
+    return
 
 
 @router.callback_query(F.data.startswith("inv:"))
