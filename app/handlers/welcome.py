@@ -23,33 +23,6 @@ from app.core.db import (
 
 router = Router()
 
-DEFAULT_WELCOME_HTML = (
-    "{mention}, вітаю в клані!\n"
-    "Сьогодні твій перший день в клані і тобі слід познайомитися з наступною інформацією:\n"
-    " - Ти потрапив(-ла) в основний чат, тут спілкуємося виключно про гру."
-    "Тут і оголошення і дуже корисна інформація. "
-    "За можливістю чат не глушимо, надоїдати не будемо."
-    "А для спілкування у нас є чат <b>Родини</b>, покликання знайдеш нижче;\n"
-    " - Вступаючи у клан ти уже погодився(-лася) з правилами клану."
-    "Тепер треба <b>ОБОВ'ЯЗКОВО</b> прочитати те, з чим ти погодився(-лася), "
-    "щоб не виникали потім \"нюанси\". Натисни на кнопку внизу і ретельно прочитай!;\n"
-    " - Щоб бути справді частиною клану треба поставити тег клану в початок свого ніку."
-    "Просто натисни один раз і він скопіюється: "
-    "<code>JRツ</code>\n"
-    "Але обережно, не у всіх відображається цей смайлик."
-    "Чому? Питай в древніх старожилів цього чату...;\n"
-    " - Обовʼязково реагуємо (за можливості) на повідомлення де тебе згадали,"
-    "ти можеш бути потрібен(-бна) комусь тут і зараз;\n"
-    " - Пояснення назви клану можеш прочитати в кінці правил. Там і легенда, і саме пояснення;\n"
-    " - Зі своїми функціями і чим я можу бути тобі корисна, дізнаєшся згодом.\n"
-    "\n"
-    "<b>Корисні посилання:</b>\n"
-    "📱 <a href=\"https://t.me/+KbU5wv6mII9mNWM6\">Родина JR</a> (офтоп спілкування)\n"
-    "📱 <a href=\"https://www.tiktok.com/@jr__ua?_t=ZM-8v9U9QDbKw1&_r=1\">TikTok</a>\n"
-    "\n"
-    "<b>Гарної та приємної гри!</b>"
-)
-
 
 def mention_html(user) -> str:
     """Повертає клікабельний HTML-меншн користувача за його ID."""
@@ -84,8 +57,10 @@ async def on_new_members(message: Message):
 
         # 2) вітання + кнопка з посиланням
         custom = await get_chat_setting(MAIN_CHAT_ID, WELCOME_HTML_KEY)
-        template = custom if custom is not None else DEFAULT_WELCOME_HTML
-        text = template.format(mention=mention_html(user))
+        if custom is None:
+            continue
+
+        text = custom.format(mention=mention_html(user))
 
         await message.answer(
             text,
@@ -94,8 +69,8 @@ async def on_new_members(message: Message):
             disable_web_page_preview=True,
         )
 
-@router.message(F.chat.id == MAIN_CHAT_ID, Command("uploadwelcome"))
-async def upload_welcome(message: Message):
+@router.message(F.chat.id == MAIN_CHAT_ID, Command("setwelcome"))
+async def set_welcome(message: Message):
     """Оновлює шаблон привітання (доступно власнику або адмінам 3+)."""
 
     # Доступ: власник або адмін 3-4
@@ -109,13 +84,13 @@ async def upload_welcome(message: Message):
     raw = message.html_text or message.text or ""
 
     # Очікуємо формат:
-    # /uploadwelcome
+    # /setwelcome
     # ТУТ НОВИЙ ТЕКСТ...
     parts = raw.split("\n", 1)
     if len(parts) < 2 or not parts[1].strip():
         await message.answer(
             "Формат:\n"
-            "/uploadwelcome\n"
+            "/setwelcome\n"
             "Твій новий текст з нового рядка (форматування збережеться)."
         )
         return
