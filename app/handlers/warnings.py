@@ -291,7 +291,7 @@ async def _send_autoban_notifications(
                 f"Хто видав: {admin_mention} ({warning.issued_by})",
                 f"Чат: {chat_title} ({message.chat.id})",
                 f"Активних попереджень: {active_count}",
-                f"warning_id: {warning.id}",
+                f"Номер справи: {warning.id}",
             ]
         ),
         parse_mode="HTML",
@@ -329,7 +329,7 @@ async def warn_handler(message: Message) -> None:
     admin_level = await _require_admin_level(
         message,
         3,
-        "Недостатньо прав. Команда доступна адміністраторам з рівнем доступу 3+.",
+        "Недостатньо прав. Команда доступна адміністраторам з рівнем доступу 3+ (лідер чи зами).",
         ttl_seconds=60,
     )
     if admin_level is None:
@@ -348,7 +348,7 @@ async def warn_handler(message: Message) -> None:
     if error_code == "username_not_found":
         await _answer_with_optional_ttl(
             message,
-            "Не вдалося знайти користувача. Використай reply на його повідомлення.",
+            "Не вдалося знайти такого гравця. Використай реплай на його повідомлення.",
         )
         return
     if not target:
@@ -373,7 +373,7 @@ async def warn_handler(message: Message) -> None:
     if not reason:
         await _answer_with_optional_ttl(
             message,
-            "Додай причину попередження. Приклад: /warn @username флуд",
+            "Додай причину попередження. Приклад: /warn @username виключає мікрофон підчас гри",
         )
         return
 
@@ -467,7 +467,7 @@ async def unwarn_handler(message: Message) -> None:
     if error_code == "username_not_found":
         await _answer_with_optional_ttl(
             message,
-            "Не вдалося знайти користувача. Використай reply на його повідомлення.",
+            "Не вдалося знайти гравця. Використай reply на його повідомлення.",
         )
         return
     if not target:
@@ -517,8 +517,8 @@ async def unwarn_handler(message: Message) -> None:
         ADMIN_LOG_CHAT_ID,
         "\n".join(
             [
-                f"WARN скасовано: {user_mention} ({target.user_id})",
-                f"Хто: {admin_mention} (lvl {admin_level})",
+                f"Попередження скасовано для: {user_mention} ({target.user_id})",
+                f"Хто скасував: {admin_mention} (lvl {admin_level})",
                 f"Скасовано варн: {issued_at_line}",
                 f"Активних тепер: {active_count}",
                 f"Де: {chat_title} ({message.chat.id})",

@@ -115,7 +115,7 @@ async def set_welcome(message: Message):
         )
         return
 
-    await message.answer("Вітальне повідомлення оновлено.")
+    await message.answer("Нове вітальне повідомлення записано в мою голову.")
 
 
 @router.message(F.chat.id == MAIN_CHAT_ID, Command("uploadrules"))
