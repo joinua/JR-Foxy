@@ -322,8 +322,23 @@ async def on_invite_callback(query: CallbackQuery) -> None:
 
 @router.message(F.chat.id == MAIN_CHAT_ID, F.new_chat_members)
 async def on_candidate_join_main_chat(message: Message) -> None:
+    logger.info(
+        "Detected new_chat_members in main chat %s: %s",
+        MAIN_CHAT_ID,
+        [user.id for user in message.new_chat_members],
+    )
+
     for user in message.new_chat_members:
         candidate = await get_candidate_in_any_chat(user.id)
+        if candidate:
+            logger.info(
+                "Candidate found for user_id=%s in reception_chat_id=%s with status=%s",
+                user.id,
+                candidate["reception_chat_id"],
+                candidate["status"],
+            )
+        else:
+            logger.info("Candidate not found for user_id=%s", user.id)
         if not candidate:
             continue
 
@@ -339,6 +354,14 @@ async def on_candidate_join_main_chat(message: Message) -> None:
             candidate["reception_chat_id"],
         )
         if invite_message_id is not None:
+            logger.info(
+                "Invite message found for user_id=%s: invite_message_id=%s",
+                user.id,
+                invite_message_id,
+            )
+        else:
+            logger.info("Invite message missing for user_id=%s", user.id)
+        if invite_message_id is not None:
             try:
                 await message.bot.delete_message(INVITE_CHAT_ID, invite_message_id)
                 await set_candidate_invite_message(
@@ -346,18 +369,25 @@ async def on_candidate_join_main_chat(message: Message) -> None:
                     candidate["reception_chat_id"],
                     None,
                 )
+                logger.info(
+                    "Invite message deleted for user_id=%s: invite_message_id=%s",
+                    user.id,
+                    invite_message_id,
+                )
             except Exception as exc:
                 logger.warning(
-                    "Failed to delete invite message for user %s: %s",
+                    "Failed to delete invite message for user_id=%s invite_message_id=%s: %s",
                     user.id,
+                    invite_message_id,
                     exc,
                 )
 
         try:
             await message.bot.ban_chat_member(INVITE_CHAT_ID, user.id)
+            logger.info("User kicked from invite chat: user_id=%s", user.id)
         except Exception as exc:
             logger.warning(
-                "Failed to kick user %s from invite chat: %s",
+                "Failed to kick user_id=%s from invite chat: %s",
                 user.id,
                 exc,
             )

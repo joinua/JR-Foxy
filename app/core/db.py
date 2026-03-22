@@ -6,7 +6,7 @@ import time
 import aiosqlite
 
 DB_PATH = Path("data") / "jrfoxy.db"
-WELCOME_HTML_KEY = "welcome_html"
+WELCOME_HTML_KEY = "welcome_text"
 RULES_URL_KEY = "rules_url"
 
 
