@@ -145,3 +145,25 @@ async def upload_rules(message: Message):
 
     await set_chat_setting(MAIN_CHAT_ID, RULES_URL_KEY, new_rules_url)
     await message.answer("Посилання на правила оновлено.")
+
+
+@router.message(F.chat.id == MAIN_CHAT_ID, Command("checkwelcome"))
+async def check_welcome(message: Message):
+    """Перевіряє, що реально збережено в БД як welcome."""
+
+    uid = message.from_user.id if message.from_user else 0
+    level = await get_admin_level(uid)
+
+    if uid != BOT_OWNER_ID and level < 3:
+        return
+
+    value = await get_chat_setting(MAIN_CHAT_ID, WELCOME_HTML_KEY)
+
+    if value is None:
+        await message.answer("❌ В БД welcome_text НЕ знайдено.")
+        return
+
+    await message.answer(
+        "✅ В БД знайдено welcome_text:\n\n"
+        f"{value}"
+    )
