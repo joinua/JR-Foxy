@@ -1,6 +1,7 @@
 """Хендлер привітання та первинної взаємодії з новим користувачем."""
 
 import time
+import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -23,6 +24,7 @@ from app.core.db import (
 
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def mention_html(user) -> str:
@@ -35,6 +37,12 @@ def mention_html(user) -> str:
 @router.message(F.chat.id == MAIN_CHAT_ID, F.new_chat_members)
 async def on_new_members(message: Message):
     """Вітає нових учасників у головному чаті та зберігає дату входу."""
+
+    logger.info(
+        "welcome.on_new_members fired: chat_id=%s new_members=%s",
+        message.chat.id,
+        [user.id for user in message.new_chat_members],
+    )
 
     # cleanup кандидата (інвайт, кік з приймальні і т.д.)
     await cleanup_candidate_after_main_join(message)
