@@ -342,7 +342,7 @@ async def cleanup_candidate_after_main_join(message: Message) -> None:
         if not candidate:
             continue
 
-        if candidate["status"] not in {"candidate", "invited"}:
+        if candidate["status"] not in {"candidate", "invited", "wait"}:
             continue
 
         await update_candidate_status(
