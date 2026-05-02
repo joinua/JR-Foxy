@@ -1,6 +1,7 @@
 """Допоміжні функції для роботи з базою даних бота."""
 
 from pathlib import Path
+import logging
 import time
 
 import aiosqlite
@@ -8,6 +9,7 @@ import aiosqlite
 DB_PATH = Path("data") / "jrfoxy.db"
 WELCOME_HTML_KEY = "welcome_text"
 RULES_URL_KEY = "rules_url"
+logger = logging.getLogger(__name__)
 
 
 async def _ensure_warnings_schema(db: aiosqlite.Connection) -> None:
@@ -311,6 +313,14 @@ async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
 
     now = int(time.time())
     normalized_chat_id = int(chat_id)
+
+        logger.info(
+        "set_chat_setting: db_path=%s chat_id=%s key=%s value_len=%s",
+        DB_PATH.resolve(),
+        normalized_chat_id,
+        key,
+        len(value),
+    )
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -335,6 +345,13 @@ async def get_chat_setting(chat_id: int, key: str) -> str | None:
             (normalized_chat_id, key),
         )
         row = await cursor.fetchone()
+        logger.info(
+            "get_chat_setting: db_path=%s chat_id=%s key=%s found=%s",
+            DB_PATH.resolve(),
+            normalized_chat_id,
+            key,
+            row is not None,
+        )
         return str(row[0]) if row else None
 
 
