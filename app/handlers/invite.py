@@ -159,7 +159,7 @@ async def force_candidate_review(message: Message) -> None:
         )
         return
 
-    if candidate["status"] != "candidate":
+    if candidate["status"] not in {"candidate", "wait"}:
         await message.answer("Немає тіла, немає діла! Кандидат уже не кандидат.")
         return
 
