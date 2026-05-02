@@ -314,12 +314,12 @@ async def set_chat_setting(chat_id: int, key: str, value: str) -> None:
     now = int(time.time())
     normalized_chat_id = int(chat_id)
 
-        logger.info(
-        "set_chat_setting: db_path=%s chat_id=%s key=%s value_len=%s",
-        DB_PATH.resolve(),
-        normalized_chat_id,
-        key,
-        len(value),
+    logger.info(
+    "set_chat_setting: db_path=%s chat_id=%s key=%s value_len=%s",
+    DB_PATH.resolve(),
+    normalized_chat_id,
+    key,
+    len(value),
     )
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -339,12 +339,15 @@ async def get_chat_setting(chat_id: int, key: str) -> str | None:
     """Повертає значення налаштування чату або None, якщо ключ відсутній."""
 
     normalized_chat_id = int(chat_id)
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT value FROM chat_settings WHERE chat_id=? AND key=?",
             (normalized_chat_id, key),
         )
+
         row = await cursor.fetchone()
+
         logger.info(
             "get_chat_setting: db_path=%s chat_id=%s key=%s found=%s",
             DB_PATH.resolve(),
@@ -352,6 +355,7 @@ async def get_chat_setting(chat_id: int, key: str) -> str | None:
             key,
             row is not None,
         )
+
         return str(row[0]) if row else None
 
 
