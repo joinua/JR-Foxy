@@ -291,7 +291,7 @@ async def on_invite_callback(query: CallbackQuery) -> None:
         admin_mention = _user_mention(query.from_user)
         await query.bot.send_message(
             ADMIN_LOG_CHAT_ID,
-            f"Адміністратор {admin_mention} відмовив кандидату та кікнув користувача {candidate_user_id}",
+            f"Адміністратор {admin_mention} відмовив кандидату та кікнув {candidate_user_id}",
             parse_mode="HTML",
         )
 
@@ -320,8 +320,8 @@ async def on_invite_callback(query: CallbackQuery) -> None:
     await query.answer()
 
 
-@router.message(F.chat.id == MAIN_CHAT_ID, F.new_chat_members)
-async def on_candidate_join_main_chat(message: Message) -> None:
+async def cleanup_candidate_after_main_join(message: Message) -> None:
+    """Очищає кандидата після його входу в основний чат."""
     logger.info(
         "Detected new_chat_members in main chat %s: %s",
         MAIN_CHAT_ID,

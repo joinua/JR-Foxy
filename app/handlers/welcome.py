@@ -11,6 +11,7 @@ from aiogram.types import (
 )
 
 from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID, RULES_URL
+from app.handlers.invite import cleanup_candidate_after_main_join
 from app.core.db import (
     RULES_URL_KEY,
     WELCOME_HTML_KEY,
@@ -34,6 +35,9 @@ def mention_html(user) -> str:
 @router.message(F.chat.id == MAIN_CHAT_ID, F.new_chat_members)
 async def on_new_members(message: Message):
     """Вітає нових учасників у головному чаті та зберігає дату входу."""
+
+    # cleanup кандидата (інвайт, кік з приймальні і т.д.)
+    await cleanup_candidate_after_main_join(message)
 
     custom_rules_url = await get_chat_setting(MAIN_CHAT_ID, RULES_URL_KEY)
     rules_url = (custom_rules_url or RULES_URL).strip()
