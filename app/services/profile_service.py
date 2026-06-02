@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.core.db import find_user_by_username
 from app.dao import profile_dao
 
 NICKNAME_PREFIX = "JRঐ"
@@ -46,7 +47,28 @@ async def get_profile(user_id: int) -> dict | None:
 
 
 async def find_profile_by_username(username: str) -> dict | None:
-    return await profile_dao.find_profile_by_username(username.lstrip("@"))
+    """Find a profile, falling back to existing local Telegram snapshots."""
+
+    normalized_username = username.lstrip("@")
+    profile = await profile_dao.find_profile_by_username(normalized_username)
+    if profile:
+        return profile
+
+    user = await find_user_by_username(normalized_username)
+    if not user:
+        return None
+
+    user_id, first_name, last_name, stored_username = user
+    now = _now_iso()
+    return await profile_dao.upsert_telegram_snapshot(
+        user_id=user_id,
+        telegram_username=stored_username or normalized_username,
+        telegram_full_name=" ".join(
+            part for part in (first_name or "", last_name or "") if part
+        ).strip(),
+        now=now,
+        create=True,
+    )
 
 
 async def sync_telegram_user(user: Any, *, create: bool = False) -> dict | None:
@@ -93,6 +115,8 @@ async def set_nickname(user: Any | int, nickname: str, *, is_admin: bool) -> Non
         raise ValueError("invalid nickname")
     profile = await _get_or_ensure_profile(user)
     user_id = user if isinstance(user, int) else user.id
+    if profile["game_nickname"] == nickname:
+        return
 
     if not is_admin and profile["nickname_updated_at"]:
         changed_at = datetime.fromisoformat(profile["nickname_updated_at"])
@@ -108,6 +132,8 @@ async def set_uid(user: Any | int, uid: str, *, is_admin: bool) -> None:
         raise ValueError(validation_error)
     profile = await _get_or_ensure_profile(user)
     user_id = user if isinstance(user, int) else user.id
+    if profile["codm_uid"] == uid:
+        return
     if not is_admin and profile["uid_edit_count"] >= 2:
         raise EditLimitError
 
@@ -120,6 +146,8 @@ async def set_uid(user: Any | int, uid: str, *, is_admin: bool) -> None:
 async def set_birthday(user: Any | int, birthday: str, *, is_admin: bool) -> None:
     profile = await _get_or_ensure_profile(user)
     user_id = user if isinstance(user, int) else user.id
+    if profile["birthday"] == birthday:
+        return
     if not is_admin and profile["birthday_edit_count"] >= 2:
         raise EditLimitError
     await profile_dao.update_birthday(user_id, birthday, _now_iso())

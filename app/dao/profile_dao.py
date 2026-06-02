@@ -98,9 +98,9 @@ async def update_nickname(user_id: int, nickname: str, now: str) -> None:
             """
             UPDATE profiles
             SET game_nickname=?, nickname_updated_at=?, updated_at=?
-            WHERE user_id=?
+            WHERE user_id=? AND COALESCE(game_nickname, '') != ?
             """,
-            (nickname, now, now, user_id),
+            (nickname, now, now, user_id, nickname),
         )
         await db.commit()
 
@@ -112,9 +112,9 @@ async def update_uid(user_id: int, uid: str, now: str) -> None:
                 """
                 UPDATE profiles
                 SET codm_uid=?, uid_edit_count=uid_edit_count + 1, updated_at=?
-                WHERE user_id=?
+                WHERE user_id=? AND COALESCE(codm_uid, '') != ?
                 """,
-                (uid, now, user_id),
+                (uid, now, user_id, uid),
             )
             await db.commit()
         except sqlite3.IntegrityError as exc:
@@ -127,8 +127,8 @@ async def update_birthday(user_id: int, birthday: str, now: str) -> None:
             """
             UPDATE profiles
             SET birthday=?, birthday_edit_count=birthday_edit_count + 1, updated_at=?
-            WHERE user_id=?
+            WHERE user_id=? AND COALESCE(birthday, '') != ?
             """,
-            (birthday, now, user_id),
+            (birthday, now, user_id, birthday),
         )
         await db.commit()
