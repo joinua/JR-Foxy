@@ -19,6 +19,7 @@ from app.handlers.start import router as start_router
 from app.handlers.welcome import router as welcome_router
 from app.handlers.invite import router as invite_router
 from app.handlers.predict import router as predict_router
+from app.handlers.profile import router as profile_router
 from app.handlers.warnings import router as warnings_router
 from app.services.silence import run_silence_scheduler
 from app.services.db_scheduler import register_tiktok_task, run_db_scheduler
@@ -32,6 +33,7 @@ ROUTERS = (
     invite_router,
     predict_router,
     start_router,
+    profile_router,
     chatid_router,
     ping_router,
     admin_router,

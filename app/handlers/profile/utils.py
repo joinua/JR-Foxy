@@ -1,0 +1,110 @@
+"""Validation and display helpers for profile handlers."""
+
+from __future__ import annotations
+
+import calendar
+from datetime import date, datetime
+from html import escape
+
+EMPTY_VALUE = "Не внесено"
+
+
+def parse_user_date(value: str) -> date:
+    parsed = datetime.strptime(value, "%d.%m.%Y").date()
+    if parsed.strftime("%d.%m.%Y") != value:
+        raise ValueError("date must use DD.MM.YYYY format")
+    return parsed
+
+
+def format_user_date(value: str | None) -> str:
+    return date.fromisoformat(value).strftime("%d.%m.%Y") if value else EMPTY_VALUE
+
+
+def pluralize(value: int, one: str, few: str, many: str) -> str:
+    if value % 10 == 1 and value % 100 != 11:
+        word = one
+    elif value % 10 in (2, 3, 4) and value % 100 not in (12, 13, 14):
+        word = few
+    else:
+        word = many
+    return f"{value} {word}"
+
+
+def age_on(birthday: date, today: date | None = None) -> int:
+    today = today or date.today()
+    return today.year - birthday.year - (
+        (today.month, today.day) < (birthday.month, birthday.day)
+    )
+
+
+def _birthday_in_year(birthday: date, year: int) -> date:
+    day = min(birthday.day, calendar.monthrange(year, birthday.month)[1])
+    return date(year, birthday.month, day)
+
+
+def days_until_birthday(birthday: date, today: date | None = None) -> int:
+    today = today or date.today()
+    upcoming = _birthday_in_year(birthday, today.year)
+    if upcoming < today:
+        upcoming = _birthday_in_year(birthday, today.year + 1)
+    return (upcoming - today).days
+
+
+def _add_months(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def format_duration(start: date, end: date | None = None) -> str:
+    end = end or date.today()
+    if start > end:
+        return EMPTY_VALUE
+
+    months = (end.year - start.year) * 12 + end.month - start.month
+    while months and _add_months(start, months) > end:
+        months -= 1
+    cursor = _add_months(start, months)
+    years, remaining_months = divmod(months, 12)
+    days = (end - cursor).days
+
+    parts = []
+    if years:
+        parts.append(pluralize(years, "рік", "роки", "років"))
+    if remaining_months:
+        parts.append(pluralize(remaining_months, "місяць", "місяці", "місяців"))
+    if days or not parts:
+        parts.append(pluralize(days, "день", "дні", "днів"))
+    return " ".join(parts)
+
+
+def render_profile(profile: dict) -> str:
+    birthday = date.fromisoformat(profile["birthday"]) if profile["birthday"] else None
+    nickname = escape(profile["game_nickname"] or EMPTY_VALUE)
+    if birthday:
+        nickname += f" ({pluralize(age_on(birthday), 'рік', 'роки', 'років')})"
+    uid = escape(profile["codm_uid"] or EMPTY_VALUE)
+    until_birthday = (
+        pluralize(days_until_birthday(birthday), "день", "дні", "днів")
+        if birthday
+        else EMPTY_VALUE
+    )
+    clan_duration = (
+        format_duration(date.fromisoformat(profile["join_date"]))
+        if profile["join_date"]
+        else EMPTY_VALUE
+    )
+    role = escape(profile["role"] or EMPTY_VALUE)
+
+    return (
+        "<b>Профіль гравця JR</b>\n\n"
+        f"🎮 <b>Ігровий нік:</b> {nickname}\n"
+        f"🆔 <b>UID:</b> <code>{uid}</code>\n"
+        f"🎂 <b>Дата народження:</b> {format_user_date(profile['birthday'])}\n"
+        f"⏳ <b>До дня народження:</b> {until_birthday}\n"
+        f"📥 <b>Дата вступу в клан:</b> {format_user_date(profile['join_date'])}\n"
+        f"🛡 <b>Стаж у клані:</b> {clan_duration}\n"
+        f"🏷 <b>Роль у клані:</b> {role}"
+    )
