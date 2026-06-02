@@ -120,6 +120,29 @@ async def init_db() -> None:
                 ON candidates (status, review_due_at);
             CREATE INDEX IF NOT EXISTS idx_candidates_user_id
                 ON candidates (user_id);
+            CREATE TABLE IF NOT EXISTS profiles (
+                user_id INTEGER PRIMARY KEY,
+                telegram_username TEXT,
+                telegram_full_name TEXT,
+                game_nickname TEXT,
+                nickname_updated_at TEXT,
+                codm_uid TEXT UNIQUE,
+                uid_edit_count INTEGER DEFAULT 0,
+                birthday TEXT,
+                birthday_edit_count INTEGER DEFAULT 0,
+                join_date TEXT,
+                join_date_source TEXT,
+                role TEXT DEFAULT 'Боєць',
+                status TEXT DEFAULT 'active',
+                first_seen_at TEXT,
+                last_seen_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                archived_at TEXT,
+                deleted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_profiles_telegram_username
+                ON profiles (telegram_username COLLATE NOCASE);
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_type TEXT NOT NULL,
