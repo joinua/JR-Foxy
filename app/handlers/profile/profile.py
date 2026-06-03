@@ -32,6 +32,8 @@ async def profile_handler(message: Message) -> None:
             return
     else:
         profile = await profile_service.get_profile(message.from_user.id)
+        if profile:
+            profile = await profile_service.fill_missing_join_date(message.from_user.id)
         if not profile:
             mention = html_user_mention(
                 message.from_user.id, message.from_user.full_name
@@ -44,4 +46,5 @@ async def profile_handler(message: Message) -> None:
             )
             return
 
+    profile = await profile_service.fill_missing_join_date(profile["user_id"]) or profile
     await message.answer(render_profile(profile), parse_mode="HTML")
