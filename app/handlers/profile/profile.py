@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.services import profile_service
-from app.handlers.profile.utils import render_profile
+from app.handlers.profile.utils import html_user_mention, render_profile
 
 router = Router()
 
@@ -33,9 +33,14 @@ async def profile_handler(message: Message) -> None:
     else:
         profile = await profile_service.get_profile(message.from_user.id)
         if not profile:
+            mention = html_user_mention(
+                message.from_user.id, message.from_user.full_name
+            )
             await message.answer(
-                "Ваш профіль ще не створено. Скористайтеся /helpprofile, "
-                "щоб дізнатися, як його заповнити."
+                f"{mention}, твій профіль ще не створено. "
+                "Скористайся /helpprofile, щоб дізнатися, як його "
+                "заповнити, або попроси допомоги у адміністрації клану.",
+                parse_mode="HTML",
             )
             return
 
