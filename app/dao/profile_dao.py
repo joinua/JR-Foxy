@@ -204,19 +204,6 @@ async def get_join_date_fallback_candidate(user_id: int) -> tuple[str, int] | No
         if row and row[0] is not None:
             return "first_message", int(row[0])
 
-        cursor = await db.execute(
-            """
-            SELECT last_seen
-            FROM call_members
-            WHERE user_id=?
-            LIMIT 1
-            """,
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        if row and row[0] is not None:
-            return "first_message", int(row[0])
-
         return None
 
 
