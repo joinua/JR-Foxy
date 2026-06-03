@@ -184,19 +184,38 @@ def _audit_display_name(row: dict) -> str:
     ).strip()
     if full_name:
         return escape(full_name)
-    return escape(str(row["user_id"]))
+    return escape(str(row.get("user_id") or "невідомий користувач"))
 
 
 def _render_profile_audit(rows: list[dict]) -> str:
     if not rows:
-        return "<b>Аудит профілів JR</b>\n\nУсі активні профілі заповнені."
+        return "Немає незаповнених профілів учасників клану! Гарна робота!"
 
-    lines = ["<b>Аудит профілів JR</b>", ""]
-    for index, row in enumerate(rows, start=1):
-        missing = ", ".join(row["missing_fields"])
-        lines.append(
-            f"{index}. {_audit_display_name(row)} — відсутньо: {escape(missing)}"
+    number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    visible_rows = rows[:5]
+    lines = ["📋 <b>Аудит профілів клану JokerRecon</b>", "━━━━━━━━━━━━"]
+
+    for index, row in enumerate(visible_rows):
+        lines.extend([f"{number_emojis[index]} {_audit_display_name(row)}", ""])
+        lines.extend(f"❌ {escape(str(field))}" for field in row["missing_fields"])
+        lines.append("━━━━━━━━━━━━")
+
+    hidden_count = len(rows) - len(visible_rows)
+    if hidden_count > 0:
+        lines.extend(
+            ["", f"Ще потребують контролю: {hidden_count} учасники клану"]
         )
+
+    lines.extend(
+        [
+            "",
+            (
+                "Прохання Офіцерам клану допомогти учасникам заповнити вище "
+                "вказану інформацію у профілі гравця зі списку. Якщо виникнуть "
+                "складнощі, зверніться в чат Офіцерів за профільною допомогою."
+            ),
+        ]
+    )
     return "\n".join(lines)
 
 
