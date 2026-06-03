@@ -236,25 +236,58 @@ async def set_join_date(target: Any | int, join_date: str) -> None:
     await profile_dao.update_join_date(user_id, join_date, "admin", _now_iso())
 
 
+def _is_blank(value: Any) -> bool:
+    return not str(value or "").strip()
+
+
 def profile_audit_missing_fields(row: dict) -> list[str]:
     missing = []
-    if not row.get("game_nickname"):
-        missing.append("ігровий нік")
-    if not row.get("codm_uid"):
+    if _is_blank(row.get("game_nickname")):
+        missing.append("Ігровий нік")
+    if _is_blank(row.get("codm_uid")):
         missing.append("UID")
-    if not row.get("birthday"):
-        missing.append("дата народження")
-    if not row.get("join_date"):
-        missing.append("дата вступу")
-    role = row.get("role")
-    if not role or role not in VALID_PROFILE_ROLES:
-        missing.append("роль")
+    if _is_blank(row.get("birthday")):
+        missing.append("Дата народження")
+    if _is_blank(row.get("join_date")):
+        missing.append("Дата вступу")
+
+    role = str(row.get("role") or "").strip()
+    if role and role not in VALID_PROFILE_ROLES:
+        missing.append("Роль")
     return missing
+
+
+def _profile_audit_identity_key(row: dict) -> tuple[str, str]:
+    user_id = row.get("user_id")
+    if user_id not in (None, ""):
+        return ("user_id", str(user_id))
+
+    for field in (
+        "telegram_username",
+        "call_username",
+        "codm_uid",
+        "game_nickname",
+        "telegram_full_name",
+    ):
+        value = str(row.get(field) or "").strip().casefold()
+        if value:
+            return (field, value)
+
+    full_name = " ".join(
+        str(part).strip()
+        for part in (row.get("call_first_name"), row.get("call_last_name"))
+        if part
+    ).casefold()
+    if full_name:
+        return ("call_full_name", full_name)
+
+    return ("row", repr(sorted(row.items())))
 
 
 async def list_profile_audit_rows() -> list[dict]:
     rows = await profile_dao.list_profiles_for_audit()
     audit_rows = []
+    seen_profiles = set()
     for row in rows:
         if row.get("user_id"):
             profile = await fill_missing_join_date(int(row["user_id"]))
@@ -270,6 +303,12 @@ async def list_profile_audit_rows() -> list[dict]:
                         "role": profile.get("role"),
                     }
                 )
+
+        profile_key = _profile_audit_identity_key(row)
+        if profile_key in seen_profiles:
+            continue
+        seen_profiles.add(profile_key)
+
         missing = profile_audit_missing_fields(row)
         if missing:
             row["missing_fields"] = missing
