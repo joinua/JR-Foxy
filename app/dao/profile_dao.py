@@ -132,3 +132,149 @@ async def update_birthday(user_id: int, birthday: str, now: str) -> None:
             (birthday, now, user_id, birthday),
         )
         await db.commit()
+
+
+async def update_role(user_id: int, role: str, now: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE profiles
+            SET role=?, updated_at=?
+            WHERE user_id=?
+            """,
+            (role, now, user_id),
+        )
+        await db.commit()
+
+
+async def update_join_date(
+    user_id: int,
+    join_date: str,
+    source: str,
+    now: str,
+    *,
+    only_if_empty: bool = False,
+) -> bool:
+    conditions = "user_id=?"
+    if only_if_empty:
+        conditions += " AND (join_date IS NULL OR join_date = '')"
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            f"""
+            UPDATE profiles
+            SET join_date=?, join_date_source=?, updated_at=?
+            WHERE {conditions}
+            """,
+            (join_date, source, now, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_join_date_fallback_candidate(user_id: int) -> tuple[str, int] | None:
+    """Return (source, unix timestamp) for the best known join-date fallback."""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT reviewed_at
+            FROM candidates
+            WHERE user_id=?
+              AND status='accepted'
+              AND reviewed_at IS NOT NULL
+            ORDER BY reviewed_at ASC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row and row[0] is not None:
+            return "invite", int(row[0])
+
+        cursor = await db.execute(
+            """
+            SELECT first_joined_at
+            FROM clan_members
+            WHERE user_id=?
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row and row[0] is not None:
+            return "first_message", int(row[0])
+
+        cursor = await db.execute(
+            """
+            SELECT last_seen
+            FROM call_members
+            WHERE user_id=?
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row and row[0] is not None:
+            return "first_message", int(row[0])
+
+        return None
+
+
+async def list_profiles_for_audit() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT
+                COALESCE(p.user_id, cm.user_id) AS user_id,
+                p.telegram_username,
+                p.telegram_full_name,
+                p.game_nickname,
+                p.codm_uid,
+                p.birthday,
+                p.join_date,
+                p.role,
+                cm.first_joined_at,
+                c.username AS call_username,
+                c.first_name AS call_first_name,
+                c.last_name AS call_last_name
+            FROM clan_members cm
+            LEFT JOIN profiles p ON p.user_id=cm.user_id
+            LEFT JOIN call_members c ON c.user_id=cm.user_id
+            WHERE p.user_id IS NULL
+               OR (
+                    COALESCE(p.status, 'active') = 'active'
+                    AND p.archived_at IS NULL
+                    AND p.deleted_at IS NULL
+               )
+            ORDER BY COALESCE(p.game_nickname, p.telegram_username, c.username, p.telegram_full_name, c.first_name, cm.user_id) COLLATE NOCASE
+            """
+        )
+        rows = await cursor.fetchall()
+        if rows:
+            return [dict(row) for row in rows]
+
+        cursor = await db.execute(
+            """
+            SELECT
+                p.user_id,
+                p.telegram_username,
+                p.telegram_full_name,
+                p.game_nickname,
+                p.codm_uid,
+                p.birthday,
+                p.join_date,
+                p.role,
+                NULL AS first_joined_at,
+                c.username AS call_username,
+                c.first_name AS call_first_name,
+                c.last_name AS call_last_name
+            FROM profiles p
+            LEFT JOIN call_members c ON c.user_id=p.user_id
+            WHERE COALESCE(p.status, 'active') = 'active'
+              AND p.archived_at IS NULL
+              AND p.deleted_at IS NULL
+            ORDER BY COALESCE(p.game_nickname, p.telegram_username, c.username, p.telegram_full_name, c.first_name, p.user_id) COLLATE NOCASE
+            """
+        )
+        return [dict(row) for row in await cursor.fetchall()]
