@@ -80,6 +80,25 @@ def format_duration(start: date, end: date | None = None) -> str:
     return " ".join(parts)
 
 
+def html_user_mention(user_id: int, display_name: str) -> str:
+    return f'<a href="tg://user?id={int(user_id)}">{escape(display_name)}</a>'
+
+
+def profile_owner_mention(profile: dict) -> str:
+    display_name = (
+        profile.get("telegram_full_name")
+        or profile.get("telegram_username")
+        or str(profile["user_id"])
+    )
+    return html_user_mention(profile["user_id"], display_name)
+
+
+def is_bot_owner(user_id: int) -> bool:
+    from app.core.config import BOT_OWNER_ID
+
+    return user_id == BOT_OWNER_ID
+
+
 def render_profile(profile: dict) -> str:
     birthday = date.fromisoformat(profile["birthday"]) if profile["birthday"] else None
     nickname = escape(profile["game_nickname"] or EMPTY_VALUE)
@@ -97,10 +116,12 @@ def render_profile(profile: dict) -> str:
         if profile["join_date"]
         else EMPTY_VALUE
     )
-    role = escape(profile["role"] or EMPTY_VALUE)
+    role_value = "Лідер" if is_bot_owner(profile["user_id"]) else profile["role"]
+    role = escape(role_value or EMPTY_VALUE)
+    owner_mention = profile_owner_mention(profile)
 
     return (
-        "<b>Профіль гравця JR</b>\n\n"
+        f"<b>Профіль гравця клану</b> {owner_mention}\n\n"
         f"🎮 <b>Ігровий нік:</b> {nickname}\n"
         f"🆔 <b>UID:</b> {uid_html}\n"
         f"🎂 <b>Дата народження:</b> {format_user_date(profile['birthday'])}\n"
