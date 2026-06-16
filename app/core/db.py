@@ -143,6 +143,17 @@ async def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_profiles_telegram_username
                 ON profiles (telegram_username COLLATE NOCASE);
+            CREATE TABLE IF NOT EXISTS birthday_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                birthday_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                remind_at INTEGER,
+                created_at INTEGER NOT NULL,
+                UNIQUE(user_id, birthday_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_birthday_notifications_lookup
+                ON birthday_notifications (status, remind_at);
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_type TEXT NOT NULL,

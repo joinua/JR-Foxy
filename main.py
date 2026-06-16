@@ -23,6 +23,7 @@ from app.handlers.profile import router as profile_router
 from app.handlers.warnings import router as warnings_router
 from app.services.silence import run_silence_scheduler
 from app.services.db_scheduler import register_tiktok_task, run_db_scheduler
+from app.services.birthday_reminders import register_birthday_daily_task
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ async def main() -> None:
     await add_admin(BOT_OWNER_ID)
     await set_admin_level(BOT_OWNER_ID, 4)
     await register_tiktok_task()
+    await register_birthday_daily_task()
 
     me = await bot.get_me()
     logger.info(
