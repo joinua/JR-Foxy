@@ -21,6 +21,12 @@ from app.core.db import (
 )
 
 from app.services.tiktok_watcher import check_and_notify
+from app.services.birthday_reminders import (
+    BIRTHDAY_DAILY_TASK,
+    BIRTHDAY_REMIND_TASK,
+    send_daily_birthday_reminders,
+    send_postponed_birthday_reminder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +111,10 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
                     await _handle_invite_review_due(bot, task)
                 elif task["task_type"] == "tiktok_check":
                     await _handle_tiktok_check(bot)
+                elif task["task_type"] == BIRTHDAY_DAILY_TASK:
+                    await send_daily_birthday_reminders(bot)
+                elif task["task_type"] == BIRTHDAY_REMIND_TASK:
+                    await send_postponed_birthday_reminder(bot, int(task["payload_json"] or 0))
                 await mark_task_done(task_id)
             except Exception as exc:
                 logger.exception("db scheduler task failed", extra={"task_id": task_id})

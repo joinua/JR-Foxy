@@ -96,7 +96,7 @@ async def help_profile_handler(message: Message) -> None:
     lines.extend(
         [
             "/role — змінити роль гравця. Доступно тільки Лідеру.",
-            "/profileadmin — у розробці",
+            "/profileadmin — адмін-панель профілю",
         ]
     )
 

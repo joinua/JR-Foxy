@@ -102,8 +102,6 @@ def is_bot_owner(user_id: int) -> bool:
 def render_profile(profile: dict) -> str:
     birthday = date.fromisoformat(profile["birthday"]) if profile["birthday"] else None
     nickname = escape(profile["game_nickname"] or EMPTY_VALUE)
-    if birthday:
-        nickname += f" ({pluralize(age_on(birthday), 'рік', 'роки', 'років')})"
     uid = escape(profile["codm_uid"]) if profile["codm_uid"] else EMPTY_VALUE
     uid_html = f"<code>{uid}</code>" if profile["codm_uid"] else uid
     until_birthday = (
@@ -119,14 +117,19 @@ def render_profile(profile: dict) -> str:
     role_value = "Лідер" if is_bot_owner(profile["user_id"]) else profile["role"]
     role = escape(role_value or EMPTY_VALUE)
     owner_mention = profile_owner_mention(profile)
+    divider = "━━━━━━━━━━━━"
 
     return (
-        f"<b>Профіль гравця клану</b> {owner_mention}\n\n"
-        f"🎮 <b>Ігровий нік:</b> {nickname}\n"
-        f"🆔 <b>UID:</b> {uid_html}\n"
-        f"🎂 <b>Дата народження:</b> {format_user_date(profile['birthday'])}\n"
-        f"⏳ <b>До дня народження:</b> {until_birthday}\n"
-        f"📥 <b>Дата вступу в клан:</b> {format_user_date(profile['join_date'])}\n"
-        f"🛡 <b>Стаж у клані:</b> {clan_duration}\n"
-        f"🏷 <b>Роль у клані:</b> {role}"
+        f"Профіль гравця клану {owner_mention}\n"
+        f"{divider}\n"
+        f"🎮 Ігровий нік: {nickname}\n"
+        f"🆔 UID: {uid_html}\n"
+        f"{divider}\n"
+        f"🎂 Дата народження: {format_user_date(profile['birthday'])}\n"
+        f"⏳ До дня народження: {until_birthday}\n"
+        f"{divider}\n"
+        f"📥 Дата вступу в клан: {format_user_date(profile['join_date'])}\n"
+        f"🛡 Стаж у клані: {clan_duration}\n"
+        f"{divider}\n"
+        f"🏷 Роль у клані: {role}"
     )
