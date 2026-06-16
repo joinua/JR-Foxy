@@ -24,6 +24,8 @@ from app.services.birthday_reminders import complete_birthday_notification, post
 router = Router()
 
 MENU_LOCKED_ALERT = "Це меню відкрите іншим адміністратором."
+ROLE_OWNER_ONLY_ALERT = "Змінювати ролі може тільки Лідер."
+JOIN_DATE_LEVEL_ALERT = "Редагувати дату вступу можуть тільки адміністратори рівня 3–4."
 
 
 class ProfileAdminEdit(StatesGroup):
@@ -187,12 +189,21 @@ async def profile_admin_callback(callback: CallbackQuery, state: FSMContext) -> 
         await state.update_data(admin_id=admin_id, target_id=target_id, panel_chat_id=callback.message.chat.id, panel_message_id=callback.message.message_id)
         await callback.message.answer("Надішліть дату народження у форматі ДД.ММ.РРРР")
     elif action == "join":
+        if await _effective_admin_level(admin_id) < 3:
+            await callback.answer(JOIN_DATE_LEVEL_ALERT, show_alert=True)
+            return
         await state.set_state(ProfileAdminEdit.join_date)
         await state.update_data(admin_id=admin_id, target_id=target_id, panel_chat_id=callback.message.chat.id, panel_message_id=callback.message.message_id)
         await callback.message.answer("Надішліть дату вступу у форматі ДД.ММ.РРРР")
     elif action == "roles":
+        if admin_id != BOT_OWNER_ID:
+            await callback.answer(ROLE_OWNER_ONLY_ALERT, show_alert=True)
+            return
         await callback.message.answer("Оберіть роль:", reply_markup=_role_keyboard(admin_id, target_id))
     elif action == "role":
+        if admin_id != BOT_OWNER_ID:
+            await callback.answer(ROLE_OWNER_ONLY_ALERT, show_alert=True)
+            return
         role = parts[4]
         if target_id == BOT_OWNER_ID:
             await callback.answer("Роль Лідера не можна змінити.", show_alert=True)
@@ -206,9 +217,11 @@ async def _ensure_state_owner(message: Message, state: FSMContext) -> dict | Non
     data = await state.get_data()
     if not message.from_user or data.get("admin_id") != message.from_user.id:
         return None
-    if not 1 <= await _effective_admin_level(message.from_user.id) <= 4:
+    level = await _effective_admin_level(message.from_user.id)
+    if not 1 <= level <= 4:
         await state.clear()
         return None
+    data["admin_level"] = level
     return data
 
 
@@ -274,6 +287,10 @@ async def admin_edit_birthday(message: Message, state: FSMContext) -> None:
 async def admin_edit_join_date(message: Message, state: FSMContext) -> None:
     data = await _ensure_state_owner(message, state)
     if not data or not message.text:
+        return
+    if int(data.get("admin_level", 0)) < 3:
+        await state.clear()
+        await message.answer(JOIN_DATE_LEVEL_ALERT)
         return
     try:
         join_date = parse_user_date(message.text.strip()).isoformat()
