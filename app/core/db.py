@@ -3,6 +3,7 @@
 from pathlib import Path
 import logging
 import time
+from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -154,6 +155,18 @@ async def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_birthday_notifications_lookup
                 ON birthday_notifications (status, remind_at);
+            CREATE TABLE IF NOT EXISTS daily_talk_activity (
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                activity_date TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                username TEXT,
+                full_name TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (chat_id, user_id, activity_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_daily_talk_activity_record
+                ON daily_talk_activity (chat_id, message_count DESC, activity_date);
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_type TEXT NOT NULL,
@@ -821,3 +834,80 @@ async def mark_task_failed(task_id: int, error_text: str) -> None:
             (now, error_text[:1000], now, task_id),
         )
         await db.commit()
+
+async def increment_daily_talk_activity(
+    chat_id: int,
+    user_id: int,
+    activity_date: str,
+    username: str | None,
+    full_name: str | None,
+) -> None:
+    """Збільшує денний лічильник активності користувача в чаті."""
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO daily_talk_activity (
+                chat_id, user_id, activity_date, message_count, username, full_name, updated_at
+            )
+            VALUES (?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(chat_id, user_id, activity_date) DO UPDATE SET
+                message_count=message_count + 1,
+                username=excluded.username,
+                full_name=excluded.full_name,
+                updated_at=excluded.updated_at
+            """,
+            (chat_id, user_id, activity_date, username, full_name, updated_at),
+        )
+        await db.commit()
+
+
+async def get_daily_talk_top(
+    chat_id: int,
+    activity_date: str,
+    limit: int = 7,
+) -> list[dict]:
+    """Повертає топ активних користувачів за день."""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT chat_id, user_id, activity_date, message_count, username, full_name
+            FROM daily_talk_activity
+            WHERE chat_id=? AND activity_date=? AND message_count > 0
+            ORDER BY message_count DESC, user_id ASC
+            LIMIT ?
+            """,
+            (chat_id, activity_date, limit),
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def get_talk_record_before(
+    chat_id: int,
+    before_date: str | None = None,
+) -> dict | None:
+    """Повертає історичний рекорд активності до вказаної дати або за весь час."""
+
+    conditions = ["chat_id=?", "message_count > 0"]
+    params: list[int | str] = [chat_id]
+    if before_date is not None:
+        conditions.append("activity_date < ?")
+        params.append(before_date)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"""
+            SELECT chat_id, user_id, activity_date, message_count, username, full_name
+            FROM daily_talk_activity
+            WHERE {' AND '.join(conditions)}
+            ORDER BY message_count DESC, activity_date ASC, user_id ASC
+            LIMIT 1
+            """,
+            params,
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None

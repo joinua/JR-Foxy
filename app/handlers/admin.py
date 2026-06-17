@@ -4,18 +4,66 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID
+from app.core.config import BOT_OWNER_ID, FAMILY_CHAT_ID, MAIN_CHAT_ID
 from app.core.db import (
     add_admin,
     delete_admin,
     get_admin_level,
+    get_chat_setting,
     list_admins,
     set_chat_setting,
     set_admin_level,
     update_admin_profile,
 )
+from app.services.talktop import TALKTOP_ENABLED_KEY
 
 router = Router()
+
+ADMIN_HELP_LINES = [
+    "<b>Адмін-команди рівнів 3–4</b>",
+    "",
+    "<b>Рівень 3+</b>",
+    "!send текст — надіслати оголошення в головний чат і чат Родини.",
+    "/setwelcome — оновити вітальне повідомлення в головному чаті.",
+    "/uploadrules посилання — оновити посилання на правила.",
+    "/checkwelcome — перевірити збережене вітання.",
+    "/joindate — встановити дату вступу в профілі.",
+    "/tiktok_check — примусово перевірити TikTok.",
+    "/warn або !warn — видати попередження гравцю.",
+    "/unwarn або !unwarn — скасувати останнє активне попередження.",
+    "/winfo або !winfo — показати інформацію про попередження гравця.",
+    "",
+    "<b>Рівень 4</b>",
+    "/adda — додати адміністратора.",
+    "/alvl — змінити рівень адміністратора.",
+    "/dela — видалити адміністратора.",
+    "/admlist — показати список адміністраторів.",
+    "/silence_enable — увімкнути хвилину мовчання.",
+    "/silence_disable — вимкнути хвилину мовчання.",
+    "/tiktok_set_thread — встановити тему TikTok у головному чаті.",
+    "/tiktok_enable — увімкнути TikTok Notify.",
+    "/tiktok_disable — вимкнути TikTok Notify.",
+    "",
+    "<b>Профілі / адмін-панель</b>",
+    "/role — змінити роль гравця. Доступно тільки Лідеру.",
+    (
+        "/profileaudit — перевірити незаповнені профілі. "
+        "Доступно адміністраторам у службових чатах або приваті."
+    ),
+    (
+        "/profileadmin — відкрити адмін-панель профілю. "
+        "Доступно адміністраторам рівнів 1–4."
+    ),
+    "",
+    "🗣️ <b>Рейтинг балакунів</b>",
+    "",
+    "/talktop_on — увімкнути щоденний рейтинг активності в чаті Родини.",
+    "/talktop_off — вимкнути щоденний рейтинг активності.",
+    "/talktop_status — перевірити стан функції.",
+    "",
+    "Доступ: рівні 3–4.",
+    "Публікація: щодня о 23:59 у чаті Родини.",
+]
 
 
 def is_private(message: Message) -> bool:
@@ -231,3 +279,50 @@ async def silence_disable_handler(message: Message) -> None:
 
     await set_chat_setting(MAIN_CHAT_ID, "silence_enabled", "0")
     await message.answer("Хвилину мовчання ВИМКНЕНО.")
+
+@router.message(Command("talktop_on"))
+async def talktop_on_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+    await sync_owner_profile(message)
+    if not await require_level(message, 3):
+        return
+
+    await set_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY, "1")
+    await message.answer("Щоденний рейтинг балакунів увімкнено для чату Родини.")
+
+
+@router.message(Command("talktop_off"))
+async def talktop_off_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+    await sync_owner_profile(message)
+    if not await require_level(message, 3):
+        return
+
+    await set_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY, "0")
+    await message.answer("Щоденний рейтинг балакунів вимкнено.")
+
+
+@router.message(Command("talktop_status"))
+async def talktop_status_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+    await sync_owner_profile(message)
+    if not await require_level(message, 3):
+        return
+
+    enabled = await get_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY) == "1"
+    status = "увімкнено" if enabled else "вимкнено"
+    await message.answer(f"Щоденний рейтинг балакунів зараз {status}.")
+
+
+@router.message(Command("adminhelp"))
+async def adminhelp_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+    await sync_owner_profile(message)
+    if not await require_level(message, 3):
+        return
+
+    await message.answer("\n".join(ADMIN_HELP_LINES), parse_mode="HTML")

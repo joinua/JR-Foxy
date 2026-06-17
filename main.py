@@ -21,9 +21,11 @@ from app.handlers.invite import router as invite_router
 from app.handlers.predict import router as predict_router
 from app.handlers.profile import router as profile_router
 from app.handlers.warnings import router as warnings_router
+from app.handlers.talktop import router as talktop_router
 from app.services.silence import run_silence_scheduler
 from app.services.db_scheduler import register_tiktok_task, run_db_scheduler
 from app.services.birthday_reminders import register_birthday_daily_task
+from app.services.talktop import register_daily_talktop_task
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ ROUTERS = (
     call_router,
     collect_router,
     warnings_router,
+    talktop_router,
 )
 
 
@@ -67,6 +70,7 @@ async def main() -> None:
     await set_admin_level(BOT_OWNER_ID, 4)
     await register_tiktok_task()
     await register_birthday_daily_task()
+    await register_daily_talktop_task()
 
     me = await bot.get_me()
     logger.info(

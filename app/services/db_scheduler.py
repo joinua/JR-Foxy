@@ -27,6 +27,7 @@ from app.services.birthday_reminders import (
     send_daily_birthday_reminders,
     send_postponed_birthday_reminder,
 )
+from app.services.talktop import TALKTOP_DAILY_TASK, send_daily_talktop
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,8 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
                     await send_daily_birthday_reminders(bot)
                 elif task["task_type"] == BIRTHDAY_REMIND_TASK:
                     await send_postponed_birthday_reminder(bot, int(task["payload_json"] or 0))
+                elif task["task_type"] == TALKTOP_DAILY_TASK:
+                    await send_daily_talktop(bot)
                 await mark_task_done(task_id)
             except Exception as exc:
                 logger.exception("db scheduler task failed", extra={"task_id": task_id})
