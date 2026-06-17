@@ -4,16 +4,18 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID
+from app.core.config import BOT_OWNER_ID, FAMILY_CHAT_ID, MAIN_CHAT_ID
 from app.core.db import (
     add_admin,
     delete_admin,
     get_admin_level,
+    get_chat_setting,
     list_admins,
     set_chat_setting,
     set_admin_level,
     update_admin_profile,
 )
+from app.services.talktop import TALKTOP_ENABLED_KEY
 
 router = Router()
 
@@ -239,8 +241,6 @@ async def talktop_on_handler(message: Message) -> None:
     await sync_owner_profile(message)
     if not await require_level(message, 3):
         return
-    from app.core.config import FAMILY_CHAT_ID
-    from app.services.talktop import TALKTOP_ENABLED_KEY
 
     await set_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY, "1")
     await message.answer("Щоденний рейтинг балакунів увімкнено для чату Родини.")
@@ -253,8 +253,6 @@ async def talktop_off_handler(message: Message) -> None:
     await sync_owner_profile(message)
     if not await require_level(message, 3):
         return
-    from app.core.config import FAMILY_CHAT_ID
-    from app.services.talktop import TALKTOP_ENABLED_KEY
 
     await set_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY, "0")
     await message.answer("Щоденний рейтинг балакунів вимкнено.")
@@ -267,9 +265,6 @@ async def talktop_status_handler(message: Message) -> None:
     await sync_owner_profile(message)
     if not await require_level(message, 3):
         return
-    from app.core.config import FAMILY_CHAT_ID
-    from app.core.db import get_chat_setting
-    from app.services.talktop import TALKTOP_ENABLED_KEY
 
     enabled = await get_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY) == "1"
     status = "увімкнено" if enabled else "вимкнено"
@@ -292,7 +287,10 @@ async def adminhelp_handler(message: Message) -> None:
         "/uploadrules посилання — оновити посилання на правила.\n"
         "/checkwelcome — перевірити збережене вітання.\n"
         "/joindate — встановити дату вступу в профілі.\n"
-        "/tiktok_check — примусово перевірити TikTok.\n/warn або !warn — видати попередження гравцю.\n/unwarn або !unwarn — скасувати останнє активне попередження.\n/winfo або !winfo — показати інформацію про попередження гравця.\n\n"
+        "/tiktok_check — примусово перевірити TikTok.\n"
+        "/warn або !warn — видати попередження гравцю.\n"
+        "/unwarn або !unwarn — скасувати останнє активне попередження.\n"
+        "/winfo або !winfo — показати інформацію про попередження гравця.\n\n"
         "<b>Рівень 4</b>\n"
         "/adda — додати адміністратора.\n"
         "/alvl — змінити рівень адміністратора.\n"
@@ -303,6 +301,10 @@ async def adminhelp_handler(message: Message) -> None:
         "/tiktok_set_thread — встановити тему TikTok у головному чаті.\n"
         "/tiktok_enable — увімкнути TikTok Notify.\n"
         "/tiktok_disable — вимкнути TikTok Notify.\n\n"
+        "<b>Профілі / адмін-панель</b>\n"
+        "/role — змінити роль гравця. Доступно тільки Лідеру.\n"
+        "/profileaudit — перевірити незаповнені профілі. Доступно адміністраторам у службових чатах або приваті.\n"
+        "/profileadmin — відкрити адмін-панель профілю. Доступно адміністраторам рівнів 1–4.\n\n"
         "🗣️ <b>Рейтинг балакунів</b>\n\n"
         "/talktop_on — увімкнути щоденний рейтинг активності в чаті Родини.\n"
         "/talktop_off — вимкнути щоденний рейтинг активності.\n"

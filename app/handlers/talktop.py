@@ -10,7 +10,7 @@ from app.services.talktop import today_kyiv
 router = Router()
 
 
-@router.message(F.chat.id == FAMILY_CHAT_ID)
+@router.message(F.chat.id == FAMILY_CHAT_ID, ~F.text.regexp(r"^[!/]\w+"))
 async def count_family_activity(message: Message) -> None:
     user = message.from_user
     if not user or user.is_bot:
