@@ -231,3 +231,83 @@ async def silence_disable_handler(message: Message) -> None:
 
     await set_chat_setting(MAIN_CHAT_ID, "silence_enabled", "0")
     await message.answer("Хвилину мовчання ВИМКНЕНО.")
+
+@router.message(Command("talktop_on"))
+async def talktop_on_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+    await sync_owner_profile(message)
+    if not await require_level(message, 3):
+        return
+    from app.core.config import FAMILY_CHAT_ID
+    from app.services.talktop import TALKTOP_ENABLED_KEY
+
+    await set_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY, "1")
+    await message.answer("Щоденний рейтинг балакунів увімкнено для чату Родини.")
+
+
+@router.message(Command("talktop_off"))
+async def talktop_off_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+    await sync_owner_profile(message)
+    if not await require_level(message, 3):
+        return
+    from app.core.config import FAMILY_CHAT_ID
+    from app.services.talktop import TALKTOP_ENABLED_KEY
+
+    await set_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY, "0")
+    await message.answer("Щоденний рейтинг балакунів вимкнено.")
+
+
+@router.message(Command("talktop_status"))
+async def talktop_status_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+    await sync_owner_profile(message)
+    if not await require_level(message, 3):
+        return
+    from app.core.config import FAMILY_CHAT_ID
+    from app.core.db import get_chat_setting
+    from app.services.talktop import TALKTOP_ENABLED_KEY
+
+    enabled = await get_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY) == "1"
+    status = "увімкнено" if enabled else "вимкнено"
+    await message.answer(f"Щоденний рейтинг балакунів зараз {status}.")
+
+
+@router.message(Command("adminhelp"))
+async def adminhelp_handler(message: Message) -> None:
+    if not await ensure_private(message):
+        return
+    await sync_owner_profile(message)
+    if not await require_level(message, 3):
+        return
+
+    await message.answer(
+        "<b>Адмін-команди рівнів 3–4</b>\n\n"
+        "<b>Рівень 3+</b>\n"
+        "!send текст — надіслати оголошення в головний чат і чат Родини.\n"
+        "/setwelcome — оновити вітальне повідомлення в головному чаті.\n"
+        "/uploadrules посилання — оновити посилання на правила.\n"
+        "/checkwelcome — перевірити збережене вітання.\n"
+        "/joindate — встановити дату вступу в профілі.\n"
+        "/tiktok_check — примусово перевірити TikTok.\n/warn або !warn — видати попередження гравцю.\n/unwarn або !unwarn — скасувати останнє активне попередження.\n/winfo або !winfo — показати інформацію про попередження гравця.\n\n"
+        "<b>Рівень 4</b>\n"
+        "/adda — додати адміністратора.\n"
+        "/alvl — змінити рівень адміністратора.\n"
+        "/dela — видалити адміністратора.\n"
+        "/admlist — показати список адміністраторів.\n"
+        "/silence_enable — увімкнути хвилину мовчання.\n"
+        "/silence_disable — вимкнути хвилину мовчання.\n"
+        "/tiktok_set_thread — встановити тему TikTok у головному чаті.\n"
+        "/tiktok_enable — увімкнути TikTok Notify.\n"
+        "/tiktok_disable — вимкнути TikTok Notify.\n\n"
+        "🗣️ <b>Рейтинг балакунів</b>\n\n"
+        "/talktop_on — увімкнути щоденний рейтинг активності в чаті Родини.\n"
+        "/talktop_off — вимкнути щоденний рейтинг активності.\n"
+        "/talktop_status — перевірити стан функції.\n\n"
+        "Доступ: рівні 3–4.\n"
+        "Публікація: щодня о 23:59 у чаті Родини.",
+        parse_mode="HTML",
+    )
