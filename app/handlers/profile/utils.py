@@ -104,6 +104,7 @@ def render_profile(profile: dict) -> str:
     nickname = escape(profile["game_nickname"] or EMPTY_VALUE)
     uid = escape(profile["codm_uid"]) if profile["codm_uid"] else EMPTY_VALUE
     uid_html = f"<code>{uid}</code>" if profile["codm_uid"] else uid
+    age = pluralize(age_on(birthday), "рік", "роки", "років") if birthday else EMPTY_VALUE
     until_birthday = (
         pluralize(days_until_birthday(birthday), "день", "дні", "днів")
         if birthday
@@ -125,6 +126,7 @@ def render_profile(profile: dict) -> str:
         f"🎮 Ігровий нік: {nickname}\n"
         f"🆔 UID: {uid_html}\n"
         f"{divider}\n"
+        f"👤 Вік: {age}\n"
         f"🎂 Дата народження: {format_user_date(profile['birthday'])}\n"
         f"⏳ До дня народження: {until_birthday}\n"
         f"{divider}\n"
