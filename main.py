@@ -43,9 +43,9 @@ ROUTERS = (
     admin_tiktok_router,
     broadcast_router,
     call_router,
+    talktop_router,
     collect_router,
     warnings_router,
-    talktop_router,
 )
 
 
