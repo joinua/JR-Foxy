@@ -13,6 +13,7 @@ from aiogram.types import (
 
 from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID, RULES_URL
 from app.handlers.invite import cleanup_candidate_after_main_join
+from app.services import profile_service
 from app.core.db import (
     RULES_URL_KEY,
     WELCOME_HTML_KEY,
@@ -64,8 +65,9 @@ async def on_new_members(message: Message):
     joined_at = int(time.time())
 
     for user in message.new_chat_members:
-        # 1) фіксуємо дату першого входу (тільки якщо юзера ще нема)
+        # 1) фіксуємо дату першого входу та повертаємо профіль після повторного вступу
         await ensure_clan_member(user.id, joined_at)
+        await profile_service.reactivate_profile(user.id)
 
         # 2) вітання + кнопка з посиланням
         custom = await get_chat_setting(MAIN_CHAT_ID, WELCOME_HTML_KEY)
@@ -80,6 +82,16 @@ async def on_new_members(message: Message):
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+
+@router.message(F.chat.id == MAIN_CHAT_ID, F.left_chat_member)
+async def archive_left_member_profile(message: Message) -> None:
+    """Приховує профіль з аудиту, коли учасник виходить із головного чату."""
+
+    user = message.left_chat_member
+    if not user or user.is_bot:
+        return
+    await profile_service.archive_profile(user.id)
+
 
 @router.message(F.chat.id == MAIN_CHAT_ID, Command("setwelcome"))
 async def set_welcome(message: Message):

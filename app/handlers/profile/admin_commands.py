@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 from html import escape
 from typing import Any
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.core.config import ADMIN_LOG_CHAT_ID, ALLOWED_CHATS, BOT_OWNER_ID
+from app.core.bot import bot
+from app.core.config import ADMIN_LOG_CHAT_ID, ALLOWED_CHATS, BOT_OWNER_ID, MAIN_CHAT_ID
 from app.core.db import get_admin_level
 from app.handlers.profile.profile import PROFILE_NOT_FOUND
 from app.handlers.profile.utils import parse_user_date
 from app.services import profile_service
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 ACCESS_DENIED = "Недостатньо прав для цієї команди."
 TARGET_NOT_FOUND = (
@@ -219,6 +223,50 @@ def _render_profile_audit(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+async def _refresh_profile_audit_rows(rows: list[dict]) -> list[dict]:
+    """Exclude former members and refresh stale Telegram names before rendering."""
+
+    refreshed_rows = []
+    for row in rows:
+        user_id = row.get("user_id")
+        if user_id in (None, ""):
+            refreshed_rows.append(row)
+            continue
+
+        try:
+            member = await bot.get_chat_member(MAIN_CHAT_ID, int(user_id))
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            logger.warning(
+                "could not verify profile audit membership: user_id=%s error=%s",
+                user_id,
+                exc,
+            )
+            refreshed_rows.append(row)
+            continue
+
+        status = getattr(member.status, "value", member.status)
+        if status in {"left", "kicked"}:
+            await profile_service.archive_profile(int(user_id))
+            continue
+
+        profile = await profile_service.sync_telegram_user(member.user, create=False)
+        if profile:
+            row.update(
+                {
+                    "telegram_username": profile.get("telegram_username"),
+                    "telegram_full_name": profile.get("telegram_full_name"),
+                    "game_nickname": profile.get("game_nickname"),
+                    "codm_uid": profile.get("codm_uid"),
+                    "birthday": profile.get("birthday"),
+                    "join_date": profile.get("join_date"),
+                    "role": profile.get("role"),
+                }
+            )
+        refreshed_rows.append(row)
+
+    return refreshed_rows
+
+
 @router.message(Command("profileaudit"))
 async def profile_audit_handler(message: Message) -> None:
     if not message.from_user:
@@ -233,4 +281,5 @@ async def profile_audit_handler(message: Message) -> None:
         return
 
     rows = await profile_service.list_profile_audit_rows()
+    rows = await _refresh_profile_audit_rows(rows)
     await message.answer(_render_profile_audit(rows), parse_mode="HTML")

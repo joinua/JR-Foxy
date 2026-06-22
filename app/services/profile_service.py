@@ -125,6 +125,14 @@ async def ensure_profile(user: Any) -> dict:
     return filled or profile
 
 
+async def archive_profile(user_id: int) -> None:
+    await profile_dao.archive_profile(user_id, _now_iso())
+
+
+async def reactivate_profile(user_id: int) -> None:
+    await profile_dao.reactivate_profile(user_id, _now_iso())
+
+
 def validate_nickname(nickname: str) -> bool:
     return nickname.startswith(NICKNAME_PREFIX)
 
