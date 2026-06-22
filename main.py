@@ -23,6 +23,7 @@ from app.handlers.invite import router as invite_router
 from app.handlers.predict import router as predict_router
 from app.handlers.profile import router as profile_router
 from app.handlers.warnings import router as warnings_router
+from app.handlers.rules_reminder import router as rules_reminder_router
 from app.handlers.talktop import router as talktop_router
 from app.services.silence import run_silence_scheduler
 from app.services.db_scheduler import register_tiktok_task, run_db_scheduler
@@ -48,6 +49,7 @@ ROUTERS = (
     admin_tiktok_router,
     broadcast_router,
     call_router,
+    rules_reminder_router,
     talktop_router,
     collect_router,
     warnings_router,
