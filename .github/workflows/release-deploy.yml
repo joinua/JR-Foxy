@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       changes:
-        description: "Short Ukrainian list of changes for officers and GitHub Release"
+        description: "Ukrainian changes separated by |; bullets are added automatically"
         required: true
         type: string
 
@@ -41,6 +41,27 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test -n "$RELEASE_BODY"
+
+      - name: Format release notes
+        run: |
+          set -euo pipefail
+          formatted="$(python3 - <<'PY'
+          import os
+          import re
+
+          items = [
+              item.strip()
+              for item in re.split(r"\s*[|•]\s*", os.environ["RELEASE_BODY"].strip())
+              if item.strip()
+          ]
+          print("\n".join(f"• {item}" for item in items))
+          PY
+          )"
+          {
+            echo "FORMATTED_RELEASE_BODY<<EOF"
+            printf '%s\n' "$formatted"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
 
       - name: Check out the exact deployment commit
         uses: actions/checkout@v5
@@ -93,13 +114,13 @@ jobs:
           gh release create "$RELEASE_VERSION" \
             --target "$GITHUB_SHA" \
             --title "JR-Foxy $RELEASE_VERSION" \
-            --notes "$RELEASE_BODY"
+            --notes "$FORMATTED_RELEASE_BODY"
 
       - name: Notify officers
         run: |
           set -euo pipefail
 
-          message=$(printf '🟢 JR-Foxy оновлено до %s\n\n%s' "$RELEASE_VERSION" "$RELEASE_BODY")
+          message=$(printf '🟢 JR-Foxy оновлено до %s\n\n%s' "$RELEASE_VERSION" "$FORMATTED_RELEASE_BODY")
           if [ -n "$OFFICERS_THREAD_ID" ]; then
             payload="$(jq -n \
               --arg chat_id "$OFFICERS_CHAT_ID" \
