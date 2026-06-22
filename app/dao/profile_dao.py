@@ -92,6 +92,36 @@ async def upsert_telegram_snapshot(
         return await _fetch_profile(db, user_id)
 
 
+async def archive_profile(user_id: int, now: str) -> None:
+    """Архівує профіль учасника, який вийшов із головного чату."""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE profiles
+            SET status='archived', archived_at=?, updated_at=?
+            WHERE user_id=?
+            """,
+            (now, now, user_id),
+        )
+        await db.commit()
+
+
+async def reactivate_profile(user_id: int, now: str) -> None:
+    """Повертає профіль до активного стану після повторного вступу."""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE profiles
+            SET status='active', archived_at=NULL, deleted_at=NULL, updated_at=?
+            WHERE user_id=?
+            """,
+            (now, user_id),
+        )
+        await db.commit()
+
+
 async def update_nickname(user_id: int, nickname: str, now: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
