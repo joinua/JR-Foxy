@@ -167,6 +167,10 @@ async def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_daily_talk_activity_record
                 ON daily_talk_activity (chat_id, message_count DESC, activity_date);
+            CREATE TABLE IF NOT EXISTS rules_reminder_cooldowns (
+                chat_id INTEGER PRIMARY KEY,
+                last_sent_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_type TEXT NOT NULL,
@@ -187,6 +191,29 @@ async def init_db() -> None:
         await _ensure_warnings_schema(db)
         await _ensure_candidates_schema(db)
         await db.commit()
+
+
+async def reserve_rules_reminder(
+    chat_id: int,
+    cooldown_seconds: int,
+) -> bool:
+    """Атомарно резервує нагадування про правила, якщо кулдаун минув."""
+
+    now = int(time.time())
+    threshold = now - cooldown_seconds
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO rules_reminder_cooldowns (chat_id, last_sent_at)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                last_sent_at=excluded.last_sent_at
+            WHERE rules_reminder_cooldowns.last_sent_at <= ?
+            """,
+            (chat_id, now, threshold),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
 
 
 async def ensure_clan_member(user_id: int, joined_at: int) -> None:
