@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+from pathlib import Path
 
 from app.core.bot import bot, dp
 from app.core.config import BOT_OWNER_ID
@@ -28,6 +30,9 @@ from app.services.birthday_reminders import register_birthday_daily_task
 from app.services.talktop import register_daily_talktop_task
 
 logger = logging.getLogger(__name__)
+
+HEALTH_FILE = Path("/tmp/jr-foxy-healthy")
+HEALTH_HEARTBEAT_SECONDS = 30
 
 
 ROUTERS = (
@@ -60,8 +65,15 @@ def setup_routers() -> None:
     logger.info("routers registered", extra={"count": len(ROUTERS)})
 
 
+async def run_health_heartbeat() -> None:
+    while True:
+        HEALTH_FILE.touch()
+        await asyncio.sleep(HEALTH_HEARTBEAT_SECONDS)
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    HEALTH_FILE.unlink(missing_ok=True)
     setup_middlewares()
     setup_routers()
 
@@ -73,16 +85,23 @@ async def main() -> None:
     await register_daily_talktop_task()
 
     me = await bot.get_me()
+    HEALTH_FILE.touch()
     logger.info(
         "starting polling",
-        extra={"bot_id": me.id, "username": me.username},
+        extra={
+            "bot_id": me.id,
+            "username": me.username,
+            "version": os.getenv("BOT_VERSION", "dev"),
+        },
     )
 
+    health_task = asyncio.create_task(run_health_heartbeat())
     silence_task = asyncio.create_task(run_silence_scheduler(bot))
     db_sched_task = asyncio.create_task(run_db_scheduler(bot))
     try:
         await dp.start_polling(bot)
     finally:
+        health_task.cancel()
         silence_task.cancel()
         db_sched_task.cancel()
 

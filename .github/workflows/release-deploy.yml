@@ -1,0 +1,119 @@
+name: Release and deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version in vX.Y.Z format"
+        required: true
+        type: string
+      changes:
+        description: "Short Ukrainian list of changes for officers and GitHub Release"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  release-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      OFFICERS_CHAT_ID: ${{ secrets.OFFICERS_CHAT_ID }}
+      OFFICERS_THREAD_ID: ${{ secrets.OFFICERS_THREAD_ID }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_BODY: ${{ inputs.changes }}
+
+    steps:
+      - name: Validate release input
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test -n "$RELEASE_BODY"
+
+      - name: Check out the exact deployment commit
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy and wait for the bot health check
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' DEPLOY_SHA='$GITHUB_SHA' BOT_VERSION='$RELEASE_VERSION' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          cd "$DEPLOY_PATH"
+          git fetch origin main
+          git checkout --force main
+          git reset --hard "$DEPLOY_SHA"
+          git clean -fd
+
+          BOT_VERSION="$BOT_VERSION" docker compose up -d --build --remove-orphans
+
+          for attempt in $(seq 1 18); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' jr-foxy)"
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs --tail 100 jr-foxy >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          docker logs --tail 100 jr-foxy >&2
+          echo "JR-Foxy did not become healthy in time." >&2
+          exit 1
+          REMOTE
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: JR-Foxy ${{ inputs.version }}
+          body: ${{ inputs.changes }}
+          generate_release_notes: false
+
+      - name: Notify officers
+        run: |
+          set -euo pipefail
+
+          message=$(printf '🟢 JR-Foxy оновлено до %s\n\n%s' "$RELEASE_VERSION" "$RELEASE_BODY")
+          if [ -n "$OFFICERS_THREAD_ID" ]; then
+            payload="$(jq -n \
+              --arg chat_id "$OFFICERS_CHAT_ID" \
+              --arg text "$message" \
+              --arg thread_id "$OFFICERS_THREAD_ID" \
+              '{chat_id: $chat_id, text: $text, disable_web_page_preview: true} + {message_thread_id: ($thread_id | tonumber)}')"
+          else
+            payload="$(jq -n \
+              --arg chat_id "$OFFICERS_CHAT_ID" \
+              --arg text "$message" \
+              '{chat_id: $chat_id, text: $text, disable_web_page_preview: true}')"
+          fi
+
+          curl --fail-with-body --silent --show-error \
+            -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            -H "Content-Type: application/json" \
+            --data "$payload"
