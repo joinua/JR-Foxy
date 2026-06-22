@@ -43,7 +43,7 @@ jobs:
           test -n "$RELEASE_BODY"
 
       - name: Check out the exact deployment commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure SSH
         run: |
@@ -87,13 +87,13 @@ jobs:
           REMOTE
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.version }}
-          target_commitish: ${{ github.sha }}
-          name: JR-Foxy ${{ inputs.version }}
-          body: ${{ inputs.changes }}
-          generate_release_notes: false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "JR-Foxy $RELEASE_VERSION" \
+            --notes "$RELEASE_BODY"
 
       - name: Notify officers
         run: |
