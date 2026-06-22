@@ -1,4 +1,4 @@
-"""Облік активності для щоденного рейтингу балакунів."""
+"""Облік активності для щоденного рейтингу балакунів.""""
 
 import logging
 
@@ -13,8 +13,9 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
-@router.message(F.chat.id == FAMILY_CHAT_ID, ~F.text.regexp(r"^[!/]\w+"))
-async def count_family_activity(message: Message) -> None:
+async def record_family_activity(message: Message) -> None:
+    """Зберігає активність одного користувацького повідомлення Родини JR."""
+
     user = message.from_user
     if not user or user.is_bot:
         return
@@ -27,7 +28,10 @@ async def count_family_activity(message: Message) -> None:
         )
     ):
         return
-    full_name = " ".join(part for part in (user.first_name, user.last_name) if part).strip() or None
+
+    full_name = " ".join(
+        part for part in (user.first_name, user.last_name) if part
+    ).strip() or None
     activity_date = today_kyiv().isoformat()
     content_type = getattr(message, "content_type", None) or type(message).__name__
     await increment_daily_talk_activity(
@@ -47,3 +51,10 @@ async def count_family_activity(message: Message) -> None:
             "increment_success": True,
         },
     )
+
+
+@router.message(F.chat.id == FAMILY_CHAT_ID, ~F.text.regexp(r"^[!/]\w+"))
+async def count_family_activity(message: Message) -> None:
+    """Рахує повідомлення Родини JR для щоденного рейтингу."""
+
+    await record_family_activity(message)
