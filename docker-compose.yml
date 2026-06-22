@@ -7,5 +7,9 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      BOT_VERSION: ${BOT_VERSION:-dev}
+    labels:
+      com.jokerrecon.jr-foxy.version: ${BOT_VERSION:-dev}
     volumes:
       - ./data:/app/data
