@@ -98,11 +98,21 @@ async def archive_profile(user_id: int, now: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            UPDATE profiles
-            SET status='archived', archived_at=?, updated_at=?
-            WHERE user_id=?
+            INSERT INTO profiles (
+                user_id,
+                status,
+                first_seen_at,
+                last_seen_at,
+                created_at,
+                updated_at,
+                archived_at
+            ) VALUES (?, 'archived', ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                status='archived',
+                archived_at=excluded.archived_at,
+                updated_at=excluded.updated_at
             """,
-            (now, now, user_id),
+            (user_id, now, now, now, now, now),
         )
         await db.commit()
 

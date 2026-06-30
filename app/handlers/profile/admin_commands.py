@@ -15,7 +15,7 @@ from app.core.bot import bot
 from app.core.config import ADMIN_LOG_CHAT_ID, ALLOWED_CHATS, BOT_OWNER_ID, MAIN_CHAT_ID
 from app.core.db import get_admin_level
 from app.handlers.profile.profile import PROFILE_NOT_FOUND
-from app.handlers.profile.utils import parse_user_date
+from app.handlers.profile.utils import has_explicit_user_reply, parse_user_date
 from app.services import profile_service
 
 router = Router()
@@ -57,7 +57,7 @@ async def _resolve_profile_command_target(
     message: Message,
 ) -> tuple[Any | int | None, list[str]]:
     parts = message.text.split()[1:] if message.text else []
-    if message.reply_to_message and message.reply_to_message.from_user:
+    if has_explicit_user_reply(message):
         return message.reply_to_message.from_user, parts
     if parts and parts[0].startswith("@"):
         profile = await profile_service.find_profile_by_username(parts[0])
@@ -223,6 +223,11 @@ def _render_profile_audit(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _is_missing_chat_member_error(exc: TelegramBadRequest) -> bool:
+    message = str(exc).lower()
+    return "user not found" in message or "member not found" in message
+
+
 async def _refresh_profile_audit_rows(rows: list[dict]) -> list[dict]:
     """Exclude former members and refresh stale Telegram names before rendering."""
 
@@ -235,7 +240,18 @@ async def _refresh_profile_audit_rows(rows: list[dict]) -> list[dict]:
 
         try:
             member = await bot.get_chat_member(MAIN_CHAT_ID, int(user_id))
-        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        except TelegramBadRequest as exc:
+            if _is_missing_chat_member_error(exc):
+                await profile_service.archive_profile(int(user_id))
+                continue
+            logger.warning(
+                "could not verify profile audit membership: user_id=%s error=%s",
+                user_id,
+                exc,
+            )
+            refreshed_rows.append(row)
+            continue
+        except TelegramForbiddenError as exc:
             logger.warning(
                 "could not verify profile audit membership: user_id=%s error=%s",
                 user_id,

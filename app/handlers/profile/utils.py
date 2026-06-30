@@ -84,6 +84,24 @@ def html_user_mention(user_id: int, display_name: str) -> str:
     return f'<a href="tg://user?id={int(user_id)}">{escape(display_name)}</a>'
 
 
+def has_explicit_user_reply(message) -> bool:
+    """Return True only for a real user reply, not an implicit forum-topic root."""
+
+    reply = getattr(message, "reply_to_message", None)
+    if not reply or not getattr(reply, "from_user", None):
+        return False
+
+    thread_id = getattr(message, "message_thread_id", None)
+    reply_message_id = getattr(reply, "message_id", None)
+    if thread_id is not None and reply_message_id == thread_id:
+        return False
+
+    if getattr(reply, "forum_topic_created", None) is not None:
+        return False
+
+    return True
+
+
 def profile_owner_mention(profile: dict) -> str:
     display_name = (
         profile.get("telegram_full_name")
