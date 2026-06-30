@@ -26,6 +26,7 @@ TARGET_NOT_FOUND = (
     "Користувача не знайдено. Спробуйте використати команду у відповідь на повідомлення."
 )
 PROFILE_AUDIT_LOADING_TEXT = "⏳ Збираю дані профілів з основного чату..."
+DELETE_AUDIT_FORMAT = "Формат: /deleteaudit @username або /deleteaudit user_id"
 ADMIN_CHAT_IDS = {
     chat_id for chat_id, name in ALLOWED_CHATS.items() if "адміністрац" in name.lower()
 }
@@ -80,6 +81,7 @@ async def help_profile_handler(message: Message) -> None:
     level = await _effective_admin_level(message.from_user.id)
     show_audit = _in_admin_safe_chat(message) or (_is_private(message) and level >= 1)
     show_join_date = _in_admin_chat(message) or (_is_private(message) and level >= 3)
+    show_delete_audit = _in_admin_safe_chat(message) or (_is_private(message) and level >= 3)
 
     lines = [
         "<b>Допомога по профілю JR</b>",
@@ -96,6 +98,8 @@ async def help_profile_handler(message: Message) -> None:
     ]
     if show_audit:
         lines.append("/profileaudit — перевірити, у кого не заповнені профілі")
+    if show_delete_audit:
+        lines.append("/deleteaudit @username — прибрати запис з аудиту профілів")
     if show_join_date:
         lines.append("/joindate — вручну змінити дату вступу гравця")
     lines.extend(
@@ -176,6 +180,43 @@ async def join_date_handler(message: Message) -> None:
         return
 
     await message.answer("Дату вступу збережено.")
+
+
+@router.message(Command("deleteaudit"))
+async def delete_audit_handler(message: Message) -> None:
+    if not message.from_user:
+        return
+
+    level = await _effective_admin_level(message.from_user.id)
+    allowed_location = _in_admin_safe_chat(message) or (
+        _is_private(message) and level >= 3
+    )
+    if level < 3 or not allowed_location:
+        await message.answer(ACCESS_DENIED)
+        return
+
+    identifier = ""
+    if has_explicit_user_reply(message) and message.reply_to_message.from_user:
+        target_user = message.reply_to_message.from_user
+        identifier = str(target_user.id)
+    else:
+        parts = (message.text or "").split(maxsplit=1)
+        identifier = parts[1].strip() if len(parts) > 1 else ""
+
+    if not identifier:
+        await message.answer(DELETE_AUDIT_FORMAT)
+        return
+
+    result = await profile_service.ignore_profile_audit_identifier(
+        identifier,
+        message.from_user.id,
+    )
+    label = result.get("username") or result.get("user_id") or result["raw_identifier"]
+    await message.answer(
+        f"Прибрала <code>{escape(str(label))}</code> з /profileaudit. "
+        "Це не видаляє профіль і не банить користувача, тільки приховує запис з аудиту.",
+        parse_mode="HTML",
+    )
 
 
 def _audit_display_name(row: dict) -> str:
