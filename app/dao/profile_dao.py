@@ -13,6 +13,27 @@ class DuplicateUIDError(Exception):
     """The requested CODM UID is already assigned."""
 
 
+async def _ensure_profile_audit_ignore_schema(db: aiosqlite.Connection) -> None:
+    await db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS profile_audit_ignored (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            raw_identifier TEXT NOT NULL,
+            ignored_by INTEGER NOT NULL,
+            ignored_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_audit_ignored_user_id
+            ON profile_audit_ignored (user_id)
+            WHERE user_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_audit_ignored_username
+            ON profile_audit_ignored (username COLLATE NOCASE)
+            WHERE username IS NOT NULL;
+        """
+    )
+
+
 async def _fetch_profile(db: aiosqlite.Connection, user_id: int) -> dict | None:
     cursor = await db.execute("SELECT * FROM profiles WHERE user_id=?", (user_id,))
     row = await cursor.fetchone()
@@ -247,9 +268,79 @@ async def get_join_date_fallback_candidate(user_id: int) -> tuple[str, int] | No
         return None
 
 
+async def ignore_profile_audit_identifier(
+    identifier: str,
+    ignored_by: int,
+    ignored_at: int,
+) -> dict:
+    normalized = identifier.strip().lstrip("@")
+    user_id: int | None = int(normalized) if normalized.isdigit() else None
+    username: str | None = None if normalized.isdigit() else normalized
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await _ensure_profile_audit_ignore_schema(db)
+
+        if user_id is None and username:
+            cursor = await db.execute(
+                """
+                SELECT user_id
+                FROM (
+                    SELECT user_id, last_seen AS sort_value
+                    FROM call_members
+                    WHERE username = ? COLLATE NOCASE
+                    UNION ALL
+                    SELECT user_id, 0 AS sort_value
+                    FROM profiles
+                    WHERE telegram_username = ? COLLATE NOCASE
+                )
+                ORDER BY sort_value DESC
+                LIMIT 1
+                """,
+                (username, username),
+            )
+            row = await cursor.fetchone()
+            if row and row["user_id"] is not None:
+                user_id = int(row["user_id"])
+
+        if user_id is not None:
+            await db.execute(
+                """
+                DELETE FROM profile_audit_ignored
+                WHERE user_id = ?
+                   OR (? IS NOT NULL AND username = ? COLLATE NOCASE)
+                """,
+                (user_id, username, username),
+            )
+            await db.execute(
+                """
+                INSERT INTO profile_audit_ignored (
+                    user_id, username, raw_identifier, ignored_by, ignored_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, username, identifier.strip(), ignored_by, ignored_at),
+            )
+        elif username:
+            await db.execute(
+                """
+                INSERT INTO profile_audit_ignored (
+                    user_id, username, raw_identifier, ignored_by, ignored_at
+                ) VALUES (NULL, ?, ?, ?, ?)
+                ON CONFLICT(username) WHERE username IS NOT NULL DO UPDATE SET
+                    raw_identifier=excluded.raw_identifier,
+                    ignored_by=excluded.ignored_by,
+                    ignored_at=excluded.ignored_at
+                """,
+                (username, identifier.strip(), ignored_by, ignored_at),
+            )
+        await db.commit()
+        return {"user_id": user_id, "username": username, "raw_identifier": identifier.strip()}
+
+
 async def list_profiles_for_audit() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
+        await _ensure_profile_audit_ignore_schema(db)
         cursor = await db.execute(
             """
             WITH known_users AS (
@@ -282,12 +373,19 @@ async def list_profiles_for_audit() -> list[dict]:
             LEFT JOIN profiles p ON p.user_id=ku.user_id
             LEFT JOIN clan_members cm ON cm.user_id=ku.user_id
             LEFT JOIN call_members c ON c.user_id=ku.user_id
-            WHERE p.user_id IS NULL
-               OR (
-                    COALESCE(p.status, 'active') = 'active'
-                    AND p.archived_at IS NULL
-                    AND p.deleted_at IS NULL
-               )
+            LEFT JOIN profile_audit_ignored ignored ON
+                   (ignored.user_id IS NOT NULL AND ignored.user_id=ku.user_id)
+                OR (ignored.username IS NOT NULL AND c.username = ignored.username COLLATE NOCASE)
+                OR (ignored.username IS NOT NULL AND p.telegram_username = ignored.username COLLATE NOCASE)
+            WHERE ignored.id IS NULL
+              AND (
+                    p.user_id IS NULL
+                    OR (
+                        COALESCE(p.status, 'active') = 'active'
+                        AND p.archived_at IS NULL
+                        AND p.deleted_at IS NULL
+                    )
+              )
             ORDER BY COALESCE(p.game_nickname, p.telegram_username, c.username, p.telegram_full_name, c.first_name, ku.user_id) COLLATE NOCASE
             """
         )

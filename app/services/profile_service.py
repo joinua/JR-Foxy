@@ -129,6 +129,14 @@ async def archive_profile(user_id: int) -> None:
     await profile_dao.archive_profile(user_id, _now_iso())
 
 
+async def ignore_profile_audit_identifier(identifier: str, ignored_by: int) -> dict:
+    return await profile_dao.ignore_profile_audit_identifier(
+        identifier,
+        ignored_by,
+        int(utc_now().timestamp()),
+    )
+
+
 async def reactivate_profile(user_id: int) -> None:
     await profile_dao.reactivate_profile(user_id, _now_iso())
 
