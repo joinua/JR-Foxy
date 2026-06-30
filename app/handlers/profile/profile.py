@@ -5,7 +5,11 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.services import profile_service
-from app.handlers.profile.utils import html_user_mention, render_profile
+from app.handlers.profile.utils import (
+    has_explicit_user_reply,
+    html_user_mention,
+    render_profile,
+)
 
 router = Router()
 
@@ -23,7 +27,7 @@ async def profile_handler(message: Message) -> None:
     await profile_service.sync_telegram_user(message.from_user)
     parts = message.text.split() if message.text else []
 
-    if message.reply_to_message and message.reply_to_message.from_user:
+    if has_explicit_user_reply(message):
         profile = await profile_service.ensure_profile(message.reply_to_message.from_user)
     elif len(parts) > 1 and parts[1].startswith("@"):
         profile = await profile_service.find_profile_by_username(parts[1])
