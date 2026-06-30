@@ -252,8 +252,21 @@ async def list_profiles_for_audit() -> list[dict]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
+            WITH known_users AS (
+                SELECT user_id FROM clan_members
+                UNION
+                SELECT user_id
+                FROM profiles
+                WHERE COALESCE(status, 'active') = 'active'
+                  AND archived_at IS NULL
+                  AND deleted_at IS NULL
+                UNION
+                SELECT user_id
+                FROM call_members
+                WHERE is_enabled = 1
+            )
             SELECT
-                COALESCE(p.user_id, cm.user_id) AS user_id,
+                ku.user_id,
                 p.telegram_username,
                 p.telegram_full_name,
                 p.game_nickname,
@@ -265,43 +278,17 @@ async def list_profiles_for_audit() -> list[dict]:
                 c.username AS call_username,
                 c.first_name AS call_first_name,
                 c.last_name AS call_last_name
-            FROM clan_members cm
-            LEFT JOIN profiles p ON p.user_id=cm.user_id
-            LEFT JOIN call_members c ON c.user_id=cm.user_id
+            FROM known_users ku
+            LEFT JOIN profiles p ON p.user_id=ku.user_id
+            LEFT JOIN clan_members cm ON cm.user_id=ku.user_id
+            LEFT JOIN call_members c ON c.user_id=ku.user_id
             WHERE p.user_id IS NULL
                OR (
                     COALESCE(p.status, 'active') = 'active'
                     AND p.archived_at IS NULL
                     AND p.deleted_at IS NULL
                )
-            ORDER BY COALESCE(p.game_nickname, p.telegram_username, c.username, p.telegram_full_name, c.first_name, cm.user_id) COLLATE NOCASE
-            """
-        )
-        rows = await cursor.fetchall()
-        if rows:
-            return [dict(row) for row in rows]
-
-        cursor = await db.execute(
-            """
-            SELECT
-                p.user_id,
-                p.telegram_username,
-                p.telegram_full_name,
-                p.game_nickname,
-                p.codm_uid,
-                p.birthday,
-                p.join_date,
-                p.role,
-                NULL AS first_joined_at,
-                c.username AS call_username,
-                c.first_name AS call_first_name,
-                c.last_name AS call_last_name
-            FROM profiles p
-            LEFT JOIN call_members c ON c.user_id=p.user_id
-            WHERE COALESCE(p.status, 'active') = 'active'
-              AND p.archived_at IS NULL
-              AND p.deleted_at IS NULL
-            ORDER BY COALESCE(p.game_nickname, p.telegram_username, c.username, p.telegram_full_name, c.first_name, p.user_id) COLLATE NOCASE
+            ORDER BY COALESCE(p.game_nickname, p.telegram_username, c.username, p.telegram_full_name, c.first_name, ku.user_id) COLLATE NOCASE
             """
         )
         return [dict(row) for row in await cursor.fetchall()]
