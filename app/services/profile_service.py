@@ -292,26 +292,42 @@ def _profile_audit_identity_key(row: dict) -> tuple[str, str]:
     return ("row", repr(sorted(row.items())))
 
 
-async def list_profile_audit_rows() -> list[dict]:
+def _apply_profile_to_audit_row(row: dict, profile: dict) -> None:
+    row.update(
+        {
+            "telegram_username": profile.get("telegram_username"),
+            "telegram_full_name": profile.get("telegram_full_name"),
+            "game_nickname": profile.get("game_nickname"),
+            "codm_uid": profile.get("codm_uid"),
+            "birthday": profile.get("birthday"),
+            "join_date": profile.get("join_date"),
+            "role": profile.get("role"),
+        }
+    )
+
+
+async def list_profile_audit_candidates() -> list[dict]:
     rows = await profile_dao.list_profiles_for_audit()
-    audit_rows = []
+    candidates = []
     seen_profiles = set()
     for row in rows:
         if row.get("user_id"):
             profile = await fill_missing_join_date(int(row["user_id"]))
             if profile:
-                row.update(
-                    {
-                        "telegram_username": profile.get("telegram_username"),
-                        "telegram_full_name": profile.get("telegram_full_name"),
-                        "game_nickname": profile.get("game_nickname"),
-                        "codm_uid": profile.get("codm_uid"),
-                        "birthday": profile.get("birthday"),
-                        "join_date": profile.get("join_date"),
-                        "role": profile.get("role"),
-                    }
-                )
+                _apply_profile_to_audit_row(row, profile)
 
+        profile_key = _profile_audit_identity_key(row)
+        if profile_key in seen_profiles:
+            continue
+        seen_profiles.add(profile_key)
+        candidates.append(row)
+    return candidates
+
+
+def build_profile_audit_rows(rows: list[dict]) -> list[dict]:
+    audit_rows = []
+    seen_profiles = set()
+    for row in rows:
         profile_key = _profile_audit_identity_key(row)
         if profile_key in seen_profiles:
             continue
@@ -319,6 +335,24 @@ async def list_profile_audit_rows() -> list[dict]:
 
         missing = profile_audit_missing_fields(row)
         if missing:
-            row["missing_fields"] = missing
-            audit_rows.append(row)
-    return audit_rows
+            audit_row = dict(row)
+            audit_row["missing_fields"] = missing
+            audit_rows.append(audit_row)
+
+    return sorted(
+        audit_rows,
+        key=lambda row: str(
+            row.get("game_nickname")
+            or row.get("telegram_username")
+            or row.get("call_username")
+            or row.get("telegram_full_name")
+            or row.get("call_first_name")
+            or row.get("user_id")
+            or ""
+        ).casefold(),
+    )
+
+
+async def list_profile_audit_rows() -> list[dict]:
+    rows = await list_profile_audit_candidates()
+    return build_profile_audit_rows(rows)
