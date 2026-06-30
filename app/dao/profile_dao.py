@@ -284,12 +284,17 @@ async def ignore_profile_audit_identifier(
         if user_id is None and username:
             cursor = await db.execute(
                 """
-                SELECT COALESCE(p.user_id, c.user_id) AS user_id
-                FROM call_members c
-                FULL OUTER JOIN profiles p ON p.user_id=c.user_id
-                WHERE c.username = ? COLLATE NOCASE
-                   OR p.telegram_username = ? COLLATE NOCASE
-                ORDER BY COALESCE(c.last_seen, 0) DESC, COALESCE(p.updated_at, '') DESC
+                SELECT user_id
+                FROM (
+                    SELECT user_id, last_seen AS sort_value
+                    FROM call_members
+                    WHERE username = ? COLLATE NOCASE
+                    UNION ALL
+                    SELECT user_id, 0 AS sort_value
+                    FROM profiles
+                    WHERE telegram_username = ? COLLATE NOCASE
+                )
+                ORDER BY sort_value DESC
                 LIMIT 1
                 """,
                 (username, username),
@@ -298,20 +303,24 @@ async def ignore_profile_audit_identifier(
             if row and row["user_id"] is not None:
                 user_id = int(row["user_id"])
 
-        await db.execute(
-            """
-            INSERT INTO profile_audit_ignored (
-                user_id, username, raw_identifier, ignored_by, ignored_at
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) WHERE user_id IS NOT NULL DO UPDATE SET
-                username=COALESCE(excluded.username, profile_audit_ignored.username),
-                raw_identifier=excluded.raw_identifier,
-                ignored_by=excluded.ignored_by,
-                ignored_at=excluded.ignored_at
-            """,
-            (user_id, username, identifier.strip(), ignored_by, ignored_at),
-        )
-        if user_id is None and username:
+        if user_id is not None:
+            await db.execute(
+                """
+                DELETE FROM profile_audit_ignored
+                WHERE user_id = ?
+                   OR (? IS NOT NULL AND username = ? COLLATE NOCASE)
+                """,
+                (user_id, username, username),
+            )
+            await db.execute(
+                """
+                INSERT INTO profile_audit_ignored (
+                    user_id, username, raw_identifier, ignored_by, ignored_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, username, identifier.strip(), ignored_by, ignored_at),
+            )
+        elif username:
             await db.execute(
                 """
                 INSERT INTO profile_audit_ignored (
