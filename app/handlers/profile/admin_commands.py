@@ -25,6 +25,7 @@ ACCESS_DENIED = "Недостатньо прав для цієї команди.
 TARGET_NOT_FOUND = (
     "Користувача не знайдено. Спробуйте використати команду у відповідь на повідомлення."
 )
+PROFILE_AUDIT_LOADING_TEXT = "⏳ Збираю дані профілів з основного чату..."
 ADMIN_CHAT_IDS = {
     chat_id for chat_id, name in ALLOWED_CHATS.items() if "адміністрац" in name.lower()
 }
@@ -228,14 +229,23 @@ def _is_missing_chat_member_error(exc: TelegramBadRequest) -> bool:
     return "user not found" in message or "member not found" in message
 
 
+def _apply_live_user_to_audit_row(row: dict, user: Any) -> None:
+    row.update(
+        {
+            "call_username": user.username,
+            "call_first_name": user.first_name,
+            "call_last_name": user.last_name,
+        }
+    )
+
+
 async def _refresh_profile_audit_rows(rows: list[dict]) -> list[dict]:
-    """Exclude former members and refresh stale Telegram names before rendering."""
+    """Verify known users against the main chat and refresh live Telegram names."""
 
     refreshed_rows = []
     for row in rows:
         user_id = row.get("user_id")
         if user_id in (None, ""):
-            refreshed_rows.append(row)
             continue
 
         try:
@@ -265,7 +275,9 @@ async def _refresh_profile_audit_rows(rows: list[dict]) -> list[dict]:
             await profile_service.archive_profile(int(user_id))
             continue
 
-        profile = await profile_service.sync_telegram_user(member.user, create=False)
+        _apply_live_user_to_audit_row(row, member.user)
+        profile = await profile_service.sync_telegram_user(member.user, create=True)
+        profile = await profile_service.fill_missing_join_date(int(user_id)) or profile
         if profile:
             row.update(
                 {
@@ -296,6 +308,14 @@ async def profile_audit_handler(message: Message) -> None:
         await message.answer(ACCESS_DENIED)
         return
 
-    rows = await profile_service.list_profile_audit_rows()
+    status_message = await message.answer(PROFILE_AUDIT_LOADING_TEXT)
+    rows = await profile_service.list_profile_audit_candidates()
     rows = await _refresh_profile_audit_rows(rows)
-    await message.answer(_render_profile_audit(rows), parse_mode="HTML")
+    rows = profile_service.build_profile_audit_rows(rows)
+    text = _render_profile_audit(rows)
+
+    try:
+        await status_message.edit_text(text, parse_mode="HTML")
+    except TelegramBadRequest:
+        await status_message.delete()
+        await message.answer(text, parse_mode="HTML")
