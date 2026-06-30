@@ -60,6 +60,7 @@ WAIT_DONE_TEXT = (
 )
 
 LEFT_RECEPTION_TEXT = "Не дочекавшись свого зіркового часу - прибульці полетіли далі"
+ACTIVE_CANDIDATE_STATUSES = {"candidate", "wait", "invited"}
 
 
 def _build_review_keyboard(candidate_user_id: int) -> InlineKeyboardMarkup:
@@ -159,7 +160,7 @@ async def force_candidate_review(message: Message) -> None:
         )
         return
 
-    if candidate["status"] not in {"candidate", "wait"}:
+    if candidate["status"] not in ACTIVE_CANDIDATE_STATUSES:
         await message.answer("Немає тіла, немає діла! Кандидат уже не кандидат.")
         return
 
@@ -188,7 +189,7 @@ async def on_invite_callback(query: CallbackQuery) -> None:
         await query.answer()
         return
     candidate = await get_candidate(candidate_user_id, INVITE_CHAT_ID)
-    if not candidate or candidate["status"] != "candidate":
+    if not candidate or candidate["status"] not in ACTIVE_CANDIDATE_STATUSES:
         await query.answer(
             "Немає тіла, немає діла! Кандидат уже не кандидат.", show_alert=True
         )
@@ -342,7 +343,7 @@ async def cleanup_candidate_after_main_join(message: Message) -> None:
         if not candidate:
             continue
 
-        if candidate["status"] not in {"candidate", "invited", "wait"}:
+        if candidate["status"] not in ACTIVE_CANDIDATE_STATUSES:
             continue
 
         await update_candidate_status(
