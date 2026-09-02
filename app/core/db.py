@@ -65,6 +65,41 @@ async def _ensure_candidates_schema(db: aiosqlite.Connection) -> None:
             )
 
 
+async def _ensure_birthday_schema(db: aiosqlite.Connection) -> None:
+    """Safely extend birthday storage without losing existing reminders."""
+
+    cursor = await db.execute("PRAGMA table_info(birthday_notifications)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    additions = {
+        "message_id": "INTEGER",
+        "sent_at": "INTEGER",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            await db.execute(
+                f"ALTER TABLE birthday_notifications ADD COLUMN {name} {definition}"
+            )
+
+    await db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS birthday_pre_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            birthday_date TEXT NOT NULL,
+            message_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            responsible_user_id INTEGER,
+            responsible_name TEXT,
+            claimed_at INTEGER,
+            created_at INTEGER NOT NULL,
+            UNIQUE(user_id, birthday_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_birthday_pre_notifications_lookup
+            ON birthday_pre_notifications (status, birthday_date);
+        """
+    )
+
+
 async def init_db() -> None:
     """Ініціалізує базу даних та створює таблиці, якщо їх ще немає."""
 
@@ -169,6 +204,8 @@ async def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'pending',
                 remind_at INTEGER,
                 created_at INTEGER NOT NULL,
+                message_id INTEGER,
+                sent_at INTEGER,
                 UNIQUE(user_id, birthday_date)
             );
             CREATE INDEX IF NOT EXISTS idx_birthday_notifications_lookup
@@ -208,6 +245,7 @@ async def init_db() -> None:
         )
         await _ensure_warnings_schema(db)
         await _ensure_candidates_schema(db)
+        await _ensure_birthday_schema(db)
         await db.commit()
 
 

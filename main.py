@@ -83,7 +83,7 @@ async def main() -> None:
     await add_admin(BOT_OWNER_ID)
     await set_admin_level(BOT_OWNER_ID, 4)
     await register_tiktok_task()
-    await register_birthday_daily_task()
+    await register_birthday_daily_task(catch_up_today=True)
     await register_daily_talktop_task()
 
     me = await bot.get_me()

@@ -2,7 +2,6 @@
 
 import json
 import random
-from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
 
@@ -11,6 +10,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.core.dates import today_kyiv
 from app.handlers.predictions import predictions
 
 router = Router()
@@ -23,7 +23,7 @@ STORE_PATH = Path("app/data/predict_store.json")
 
 
 def _today_str() -> str:
-    return datetime.now().date().isoformat()
+    return today_kyiv().isoformat()
 
 
 def _load_store() -> dict:

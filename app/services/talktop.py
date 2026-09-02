@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from html import escape
-from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
 from app.core.config import FAMILY_CHAT_ID
+from app.core.dates import KYIV_TZ, today_kyiv as current_kyiv_date
 from app.core.db import (
     cancel_pending_tasks,
     get_chat_setting,
@@ -19,7 +19,6 @@ from app.core.db import (
 
 TALKTOP_DAILY_TASK = "daily_talktop"
 TALKTOP_ENABLED_KEY = "daily_talktop_enabled"
-KYIV_TZ = ZoneInfo("Europe/Kyiv")
 _MONTHS_UA = {
     1: "січня", 2: "лютого", 3: "березня", 4: "квітня", 5: "травня", 6: "червня",
     7: "липня", 8: "серпня", 9: "вересня", 10: "жовтня", 11: "листопада", 12: "грудня",
@@ -28,7 +27,7 @@ _MEDALS = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣"]
 
 
 def today_kyiv() -> date:
-    return datetime.now(KYIV_TZ).date()
+    return current_kyiv_date()
 
 
 def _next_2359_timestamp(now: datetime | None = None) -> int:

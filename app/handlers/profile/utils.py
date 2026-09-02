@@ -6,6 +6,8 @@ import calendar
 from datetime import date, datetime
 from html import escape
 
+from app.core.dates import today_kyiv
+
 EMPTY_VALUE = "Не внесено"
 
 
@@ -31,7 +33,7 @@ def pluralize(value: int, one: str, few: str, many: str) -> str:
 
 
 def age_on(birthday: date, today: date | None = None) -> int:
-    today = today or date.today()
+    today = today or today_kyiv()
     return today.year - birthday.year - (
         (today.month, today.day) < (birthday.month, birthday.day)
     )
@@ -43,7 +45,7 @@ def _birthday_in_year(birthday: date, year: int) -> date:
 
 
 def days_until_birthday(birthday: date, today: date | None = None) -> int:
-    today = today or date.today()
+    today = today or today_kyiv()
     upcoming = _birthday_in_year(birthday, today.year)
     if upcoming < today:
         upcoming = _birthday_in_year(birthday, today.year + 1)
@@ -59,7 +61,7 @@ def _add_months(value: date, months: int) -> date:
 
 
 def format_duration(start: date, end: date | None = None) -> str:
-    end = end or date.today()
+    end = end or today_kyiv()
     if start > end:
         return EMPTY_VALUE
 
