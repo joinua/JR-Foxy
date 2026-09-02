@@ -66,6 +66,15 @@ jobs:
       - name: Check out the exact deployment commit
         uses: actions/checkout@v5
 
+      - name: Build the deployment image
+        run: |
+          set -euo pipefail
+          docker build \
+            --label "com.jokerrecon.jr-foxy.version=$RELEASE_VERSION" \
+            --tag "jr-foxy:$RELEASE_VERSION" \
+            .
+          docker image save "jr-foxy:$RELEASE_VERSION" | gzip -1 > /tmp/jr-foxy-image.tar.gz
+
       - name: Configure SSH
         run: |
           set -euo pipefail
@@ -75,20 +84,37 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Prepare the deployment directory
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE'
+          set -euo pipefail
+          install -d "$DEPLOY_PATH"
+          test -f "$DEPLOY_PATH/.env"
+          install -d "$DEPLOY_PATH/data"
+          REMOTE
+
+          scp -i ~/.ssh/id_ed25519 -o BatchMode=yes \
+            docker-compose.yml \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
+
+      - name: Upload the deployment image
+        run: |
+          set -euo pipefail
+          gzip -dc /tmp/jr-foxy-image.tar.gz | \
+            ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+              docker image load
+
       - name: Deploy and wait for the bot health check
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-            "DEPLOY_PATH='$DEPLOY_PATH' DEPLOY_SHA='$GITHUB_SHA' BOT_VERSION='$RELEASE_VERSION' bash -s" <<'REMOTE'
+            "DEPLOY_PATH='$DEPLOY_PATH' BOT_VERSION='$RELEASE_VERSION' bash -s" <<'REMOTE'
           set -euo pipefail
 
           cd "$DEPLOY_PATH"
-          git fetch origin main
-          git checkout --force main
-          git reset --hard "$DEPLOY_SHA"
-          git clean -fd
-
-          DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 BOT_VERSION="$BOT_VERSION" docker compose build
+          BOT_VERSION="$BOT_VERSION" docker compose config --quiet
           BOT_VERSION="$BOT_VERSION" docker compose up -d --no-build --remove-orphans
 
           for attempt in $(seq 1 18); do
