@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from html import escape
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -19,7 +20,12 @@ from app.handlers.profile.admin_commands import (
 from app.handlers.profile.profile import PROFILE_NOT_FOUND
 from app.handlers.profile.utils import parse_user_date, render_profile
 from app.services import profile_service
-from app.services.birthday_reminders import complete_birthday_notification, postpone_birthday_notification
+from app.services.birthday_reminders import (
+    claim_birthday_pre_notification,
+    complete_birthday_notification,
+    postpone_birthday_notification,
+    render_birthday_pre_message,
+)
 
 router = Router()
 
@@ -53,6 +59,19 @@ def birthday_reminder_keyboard(notification_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="✅ Привітали", callback_data=_reminder_callback("done", notification_id)),
                 InlineKeyboardButton(text="⏰ Нагадати через 6 годин", callback_data=_reminder_callback("later", notification_id)),
+            ]
+        ]
+    )
+
+
+def birthday_pre_reminder_keyboard(notification_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Я візьмусь",
+                    callback_data=f"bdpre:claim:{notification_id}",
+                )
             ]
         ]
     )
@@ -312,9 +331,58 @@ async def birthday_reminder_callback(callback: CallbackQuery) -> None:
         return
     _, action, notification_id = callback.data.split(":", 2)
     if action == "done":
-        await complete_birthday_notification(int(notification_id))
+        updated = await complete_birthday_notification(int(notification_id))
+        if not updated:
+            await callback.answer("Це нагадування вже опрацьоване.", show_alert=True)
+            return
         await callback.message.edit_text("✅ Учасника вже привітали.", reply_markup=None)
     elif action == "later":
-        await postpone_birthday_notification(int(notification_id))
+        updated = await postpone_birthday_notification(int(notification_id))
+        if not updated:
+            await callback.answer("Це нагадування вже опрацьоване.", show_alert=True)
+            return
         await callback.message.edit_text("⏰ Нагадування заплановано через 6 годин.", reply_markup=None)
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bdpre:"))
+async def birthday_pre_reminder_callback(callback: CallbackQuery) -> None:
+    if not callback.data or not callback.message or not callback.from_user:
+        return
+    if not 1 <= await _effective_admin_level(callback.from_user.id) <= 4:
+        await callback.answer(ACCESS_DENIED, show_alert=True)
+        return
+
+    _, action, notification_id = callback.data.split(":", 2)
+    if action != "claim":
+        await callback.answer("Невідома дія.", show_alert=True)
+        return
+
+    claimed = await claim_birthday_pre_notification(
+        int(notification_id),
+        callback.from_user.id,
+        callback.from_user.full_name,
+    )
+    if not claimed:
+        await callback.answer(
+            "За це привітання вже взявся інший адміністратор.",
+            show_alert=True,
+        )
+        return
+
+    profile = await profile_service.get_profile(int(claimed["user_id"]))
+    if not profile:
+        await callback.answer(PROFILE_NOT_FOUND, show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        render_birthday_pre_message(
+            profile,
+            date.fromisoformat(str(claimed["birthday_date"])),
+            responsible_user_id=int(claimed["responsible_user_id"]),
+            responsible_name=str(claimed["responsible_name"]),
+        ),
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+    await callback.answer("Відповідального за привітання призначено.")

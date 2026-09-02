@@ -3,12 +3,12 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.types import ChatPermissions
 
 from app.core.config import ALLOWED_CHATS, MAIN_CHAT_ID
+from app.core.dates import KYIV_TZ
 from app.core.db import get_chat_setting, set_chat_setting
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ SILENCE_START_TEXT = (
     "Схили голову. Подякуй. Пам’ятай."
 )
 SILENCE_END_TEXT = "Дякую! Слава Україні!"
-SILENCE_TZ = ZoneInfo("Europe/Kyiv")
+SILENCE_TZ = KYIV_TZ
 
 
 def _seconds_to_next_silence(now: datetime) -> float:

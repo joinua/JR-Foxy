@@ -5,8 +5,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
+from datetime import date, datetime, tzinfo
 
 try:
     from zoneinfo import ZoneInfo
@@ -30,7 +29,7 @@ _MONTHS_UA = {
 }
 
 
-def _ua_tz() -> Optional[object]:
+def _ua_tz() -> tzinfo | None:
     """Повертає ZoneInfo('Europe/Kyiv') або None, якщо зона недоступна."""
 
     if ZoneInfo is None:
@@ -43,10 +42,31 @@ def _ua_tz() -> Optional[object]:
         return None
 
 
+KYIV_TZ = _ua_tz()
+
+
+def to_kyiv_datetime(value: datetime | None = None) -> datetime:
+    """Return an aware Europe/Kyiv datetime when timezone data is available."""
+
+    if value is None:
+        return datetime.now(KYIV_TZ) if KYIV_TZ is not None else datetime.now()
+    if KYIV_TZ is None:
+        return value
+    if value.tzinfo is None:
+        return value.replace(tzinfo=KYIV_TZ)
+    return value.astimezone(KYIV_TZ)
+
+
+def today_kyiv() -> date:
+    """Return the current calendar date used by every bot feature."""
+
+    return to_kyiv_datetime().date()
+
+
 def _to_datetime(value: datetime | int) -> datetime:
     """Нормалізує дату до datetime, БЕЗПЕЧНО для Windows."""
 
-    tz = _ua_tz()
+    tz = KYIV_TZ
 
     if isinstance(value, datetime):
         if tz is None:
