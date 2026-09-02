@@ -88,7 +88,8 @@ jobs:
           git reset --hard "$DEPLOY_SHA"
           git clean -fd
 
-          BOT_VERSION="$BOT_VERSION" docker compose up -d --build --remove-orphans
+          DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 BOT_VERSION="$BOT_VERSION" docker compose build
+          BOT_VERSION="$BOT_VERSION" docker compose up -d --no-build --remove-orphans
 
           for attempt in $(seq 1 18); do
             status="$(docker inspect --format '{{.State.Health.Status}}' jr-foxy)"
