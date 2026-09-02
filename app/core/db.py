@@ -51,6 +51,19 @@ async def _ensure_candidates_schema(db: aiosqlite.Connection) -> None:
             "ALTER TABLE candidates ADD COLUMN invite_message_id INTEGER"
         )
 
+    additions = {
+        "rules_status": "TEXT NOT NULL DEFAULT 'not_sent'",
+        "rules_first_message_id": "INTEGER",
+        "rules_message_id": "INTEGER",
+        "rules_responded_at": "INTEGER",
+        "rules_block_message_id": "INTEGER",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            await db.execute(
+                f"ALTER TABLE candidates ADD COLUMN {name} {definition}"
+            )
+
 
 async def init_db() -> None:
     """Ініціалізує базу даних та створює таблиці, якщо їх ще немає."""
@@ -115,6 +128,11 @@ async def init_db() -> None:
                 reviewed_at INTEGER,
                 invite_link TEXT,
                 invite_message_id INTEGER,
+                rules_status TEXT NOT NULL DEFAULT 'not_sent',
+                rules_first_message_id INTEGER,
+                rules_message_id INTEGER,
+                rules_responded_at INTEGER,
+                rules_block_message_id INTEGER,
                 UNIQUE(user_id, reception_chat_id)
             );
             CREATE INDEX IF NOT EXISTS idx_candidates_status_due
@@ -547,6 +565,11 @@ def _candidate_from_row(row: tuple) -> dict | None:
         "reviewed_at": row[8],
         "invite_link": row[9],
         "invite_message_id": row[10],
+        "rules_status": str(row[11]),
+        "rules_first_message_id": row[12],
+        "rules_message_id": row[13],
+        "rules_responded_at": row[14],
+        "rules_block_message_id": row[15],
     }
 
 
@@ -571,10 +594,14 @@ async def upsert_candidate_on_join(
                 reviewed_at,
                 invite_link,
                 invite_message_id
+                , rules_status, rules_first_message_id, rules_message_id,
+                rules_responded_at, rules_block_message_id
             )
-            VALUES (?, ?, 'candidate', ?, ?, 0, NULL, NULL, NULL, NULL, NULL)
+            VALUES (?, ?, 'candidate', ?, ?, 0, NULL, NULL, NULL, NULL, NULL,
+                    'not_sent', NULL, NULL, NULL, NULL)
             ON CONFLICT(user_id, reception_chat_id) DO UPDATE SET
                 status='candidate',
+                created_at=excluded.created_at,
                 review_due_at=excluded.review_due_at,
                 wait_count=0,
                 last_buttons_msg_id=NULL,
@@ -582,6 +609,9 @@ async def upsert_candidate_on_join(
                 reviewed_at=NULL,
                 invite_link=NULL,
                 invite_message_id=NULL
+                , rules_status='not_sent', rules_first_message_id=NULL,
+                rules_message_id=NULL, rules_responded_at=NULL,
+                rules_block_message_id=NULL
             """,
             (user_id, reception_chat_id, now, review_due_at),
         )
@@ -604,6 +634,8 @@ async def get_candidate(user_id: int, reception_chat_id: int) -> dict | None:
                 reviewed_at,
                 invite_link,
                 invite_message_id
+                , rules_status, rules_first_message_id, rules_message_id,
+                rules_responded_at, rules_block_message_id
             FROM candidates
             WHERE user_id=? AND reception_chat_id=?
             """,
@@ -629,6 +661,8 @@ async def get_candidate_in_any_chat(user_id: int) -> dict | None:
                 reviewed_at,
                 invite_link,
                 invite_message_id
+                , rules_status, rules_first_message_id, rules_message_id,
+                rules_responded_at, rules_block_message_id
             FROM candidates
             WHERE user_id=?
             ORDER BY created_at DESC
@@ -638,6 +672,85 @@ async def get_candidate_in_any_chat(user_id: int) -> dict | None:
         )
         row = await cur.fetchone()
         return _candidate_from_row(row)
+
+
+async def reserve_candidate_rules(
+    user_id: int, reception_chat_id: int, first_message_id: int
+) -> bool:
+    """Атомарно резервує перше надсилання правил активному кандидату."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE candidates
+            SET rules_status='pending', rules_first_message_id=?
+            WHERE user_id=? AND reception_chat_id=?
+              AND status IN ('candidate', 'wait') AND rules_status='not_sent'
+            """,
+            (first_message_id, user_id, reception_chat_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def finish_candidate_rules_send(
+    user_id: int, reception_chat_id: int, message_id: int
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE candidates SET rules_message_id=? WHERE user_id=? AND reception_chat_id=? AND rules_status='pending'",
+            (message_id, user_id, reception_chat_id),
+        )
+        await db.commit()
+
+
+async def release_candidate_rules_reservation(
+    user_id: int, reception_chat_id: int
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE candidates SET rules_status='not_sent', rules_first_message_id=NULL
+               WHERE user_id=? AND reception_chat_id=? AND rules_status='pending'
+                 AND rules_message_id IS NULL""",
+            (user_id, reception_chat_id),
+        )
+        await db.commit()
+
+
+async def answer_candidate_rules(
+    user_id: int, reception_chat_id: int, answer: str, responded_at: int
+) -> bool:
+    """Одноразово записує відповідь лише на актуальний pending-договір."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """UPDATE candidates SET rules_status=?, rules_responded_at=?
+               WHERE user_id=? AND reception_chat_id=? AND rules_status='pending'""",
+            (answer, responded_at, user_id, reception_chat_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def reset_candidate_rules(user_id: int, reception_chat_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """UPDATE candidates
+               SET rules_status='pending', rules_message_id=NULL, rules_responded_at=NULL
+               WHERE user_id=? AND reception_chat_id=? AND status IN ('candidate', 'wait')""",
+            (user_id, reception_chat_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def set_candidate_rules_block_message(
+    user_id: int, reception_chat_id: int, message_id: int | None
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE candidates SET rules_block_message_id=? WHERE user_id=? AND reception_chat_id=?",
+            (message_id, user_id, reception_chat_id),
+        )
+        await db.commit()
 
 
 async def update_candidate_status(
