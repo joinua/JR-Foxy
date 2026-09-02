@@ -5,6 +5,7 @@ import time
 from html import escape
 
 from aiogram import F, Router
+from aiogram.filters import BaseFilter
 from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardButton,
@@ -18,14 +19,20 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from app.core.config import ADMIN_LOG_CHAT_ID, INVITE_CHAT_ID, MAIN_CHAT_ID
 from app.core.db import (
     cancel_pending_tasks,
+    answer_candidate_rules,
+    finish_candidate_rules_send,
     get_admin_level,
     get_candidate,
     get_candidate_in_any_chat,
     get_candidate_invite_message,
     postpone_candidate_review,
+    release_candidate_rules_reservation,
+    reserve_candidate_rules,
+    reset_candidate_rules,
     schedule_task,
     set_candidate_buttons_message,
     set_candidate_invite_message,
+    set_candidate_rules_block_message,
     update_candidate_status,
     upsert_candidate_on_join,
 )
@@ -61,6 +68,78 @@ WAIT_DONE_TEXT = (
 
 LEFT_RECEPTION_TEXT = "Не дочекавшись свого зіркового часу - прибульці полетіли далі"
 ACTIVE_CANDIDATE_STATUSES = {"candidate", "wait", "invited"}
+RULES_TRIGGER_STATUSES = {"candidate", "wait"}
+
+RULES_TEXT = """🦊 Почекаймо на адміністрацію клану разом!
+
+А поки хочу озвучити кілька важливих умов, без яких приєднатися до клану неможливо:
+
+1️⃣ У грі обов’язково мати кланову приставку в ніку. Скопіювати її можна буде в Головному чаті після прийняття до клану.
+
+2️⃣ Обов’язкова присутність у Головному чаті клану. Вихід із чату = вихід із клану.
+
+3️⃣ Не грати з під@р@сами (москалями). Тут без коментарів — навіть слону зрозуміло.
+
+❓ То як, погоджуєшся з цими правилами?"""
+
+BLOCKED_ACCEPT_TEXT = "⚠️ Кандидат ще не погодився з обов’язковими правилами клану."
+
+
+def _build_rules_keyboard(candidate_user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Так", callback_data=f"rules:yes:{candidate_user_id}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Ні", callback_data=f"rules:no:{candidate_user_id}"
+                ),
+            ]
+        ]
+    )
+
+
+class CandidateFirstMessageFilter(BaseFilter):
+    """Пропускає лише звичайне перше повідомлення активного кандидата."""
+
+    async def __call__(self, message: Message) -> bool:
+        user = message.from_user
+        if not user or user.is_bot or (message.text or "").startswith("/"):
+            return False
+        if message.content_type not in {
+            "text",
+            "animation",
+            "audio",
+            "document",
+            "live_photo",
+            "paid_media",
+            "photo",
+            "sticker",
+            "story",
+            "video",
+            "video_note",
+            "voice",
+            "checklist",
+            "contact",
+            "dice",
+            "game",
+            "poll",
+            "venue",
+            "location",
+            "users_shared",
+            "chat_shared",
+            "user_shared",
+            "gift",
+            "unique_gift",
+        }:
+            return False
+        candidate = await get_candidate(user.id, INVITE_CHAT_ID)
+        return bool(
+            candidate
+            and candidate["status"] in RULES_TRIGGER_STATUSES
+            and candidate["rules_status"] == "not_sent"
+        )
 
 
 def _build_review_keyboard(candidate_user_id: int) -> InlineKeyboardMarkup:
@@ -171,6 +250,164 @@ async def force_candidate_review(message: Message) -> None:
     return
 
 
+@router.message(F.chat.id == INVITE_CHAT_ID, CandidateFirstMessageFilter())
+async def send_rules_after_first_candidate_message(message: Message) -> None:
+    """Надсилає договір один раз після першого звичайного повідомлення."""
+    user = message.from_user
+    if not user:
+        return
+    reserved = await reserve_candidate_rules(
+        user.id, INVITE_CHAT_ID, message.message_id
+    )
+    if not reserved:
+        return
+    try:
+        sent = await message.reply(
+            RULES_TEXT,
+            parse_mode="HTML",
+            reply_markup=_build_rules_keyboard(user.id),
+        )
+    except Exception:
+        await release_candidate_rules_reservation(user.id, INVITE_CHAT_ID)
+        logger.exception(
+            "Failed to send first candidate rules", extra={"user_id": user.id}
+        )
+        return
+    await finish_candidate_rules_send(user.id, INVITE_CHAT_ID, sent.message_id)
+    logger.info("First candidate rules sent", extra={"user_id": user.id})
+
+
+@router.callback_query(F.data.startswith("rules:"))
+async def on_rules_callback(query: CallbackQuery) -> None:
+    try:
+        _, action, raw_user_id = (query.data or "").split(":", 2)
+        candidate_user_id = int(raw_user_id)
+    except (TypeError, ValueError):
+        await query.answer()
+        return
+
+    if action == "resend":
+        await _resend_candidate_rules(query, candidate_user_id)
+        return
+    if action not in {"yes", "no"} or not query.message:
+        await query.answer()
+        return
+    if query.from_user.id != candidate_user_id:
+        await query.answer("Ці кнопки призначені кандидату.", show_alert=True)
+        return
+
+    candidate = await get_candidate(candidate_user_id, INVITE_CHAT_ID)
+    if (
+        not candidate
+        or candidate["status"] not in RULES_TRIGGER_STATUSES
+        or candidate["rules_status"] != "pending"
+        or candidate["rules_message_id"] != query.message.message_id
+    ):
+        await query.answer()
+        return
+
+    answer = "accepted" if action == "yes" else "declined"
+    changed = await answer_candidate_rules(
+        candidate_user_id, INVITE_CHAT_ID, answer, int(time.time())
+    )
+    if not changed:
+        await query.answer()
+        return
+
+    mention = (
+        f'<a href="tg://user?id={candidate_user_id}">'
+        f"{escape(query.from_user.full_name or 'кандидат')}</a>"
+    )
+    if answer == "accepted":
+        text = (
+            f"✅ {mention} погоджується з обов’язковими правилами клану й очікує "
+            "на адміністрацію, щоб пройти співбесіду.\n\n"
+            "🦊 Я також чекаю на адміністрацію — нехай уже скажуть мені, що робити далі."
+        )
+        logger.info("Candidate accepted rules", extra={"user_id": candidate_user_id})
+    else:
+        text = (
+            f"❌ {mention} не погоджується з обов’язковими правилами клану.\n\n"
+            "💬 Розкажи, будь ласка, з яким саме пунктом ти не погоджуєшся і чому. "
+            "Без виконання цих умов приєднатися до клану неможливо."
+        )
+        logger.info("Candidate declined rules", extra={"user_id": candidate_user_id})
+    try:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=None)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        logger.warning(
+            "Failed to edit candidate rules response",
+            extra={"user_id": candidate_user_id},
+        )
+    await query.answer()
+
+
+async def _resend_candidate_rules(query: CallbackQuery, candidate_user_id: int) -> None:
+    if await get_admin_level(query.from_user.id) < 2:
+        await query.answer("Слухаюся лише адміністраторів.", show_alert=True)
+        return
+    if not query.message or query.message.chat.id != INVITE_CHAT_ID:
+        await query.answer()
+        return
+    candidate = await get_candidate(candidate_user_id, INVITE_CHAT_ID)
+    if not candidate or candidate["status"] not in RULES_TRIGGER_STATUSES:
+        await query.answer(
+            "Немає тіла, немає діла! Кандидат уже не кандидат.", show_alert=True
+        )
+        return
+    if not await reset_candidate_rules(candidate_user_id, INVITE_CHAT_ID):
+        await query.answer()
+        return
+
+    kwargs = {
+        "chat_id": INVITE_CHAT_ID,
+        "text": RULES_TEXT,
+        "parse_mode": "HTML",
+        "reply_markup": _build_rules_keyboard(candidate_user_id),
+    }
+    first_message_id = candidate["rules_first_message_id"]
+    try:
+        sent = (
+            await query.bot.send_message(**kwargs, reply_to_message_id=first_message_id)
+            if first_message_id
+            else await query.bot.send_message(**kwargs)
+        )
+    except TelegramBadRequest:
+        mention = f'<a href="tg://user?id={candidate_user_id}">кандидат</a>\n\n'
+        try:
+            sent = await query.bot.send_message(
+                **{**kwargs, "text": mention + RULES_TEXT}
+            )
+        except (TelegramBadRequest, TelegramForbiddenError):
+            logger.warning(
+                "Failed to resend candidate rules", extra={"user_id": candidate_user_id}
+            )
+            await query.answer(
+                "Не вдалося надіслати договір. Спробуйте ще раз.", show_alert=True
+            )
+            return
+    except TelegramForbiddenError:
+        logger.warning(
+            "Failed to resend candidate rules", extra={"user_id": candidate_user_id}
+        )
+        await query.answer(
+            "Не вдалося надіслати договір. Спробуйте ще раз.", show_alert=True
+        )
+        return
+    await finish_candidate_rules_send(
+        candidate_user_id, INVITE_CHAT_ID, sent.message_id
+    )
+    try:
+        await query.message.edit_text(
+            "🔁 Договір повторно надіслано кандидату.", reply_markup=None
+        )
+    except TelegramBadRequest:
+        pass
+    await set_candidate_rules_block_message(candidate_user_id, INVITE_CHAT_ID, None)
+    logger.info("Candidate rules resent", extra={"user_id": candidate_user_id})
+    await query.answer()
+
+
 @router.callback_query(F.data.startswith("inv:"))
 async def on_invite_callback(query: CallbackQuery) -> None:
     if not query.message or query.message.chat.id != INVITE_CHAT_ID:
@@ -198,6 +435,42 @@ async def on_invite_callback(query: CallbackQuery) -> None:
     reviewed_at = int(time.time())
 
     if action == "accept":
+        if candidate["rules_status"] != "accepted":
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🔁 Надіслати договір ще раз",
+                            callback_data=f"rules:resend:{candidate_user_id}",
+                        )
+                    ]
+                ]
+            )
+            block_message_id = candidate["rules_block_message_id"]
+            if block_message_id:
+                try:
+                    await query.bot.edit_message_text(
+                        BLOCKED_ACCEPT_TEXT,
+                        chat_id=INVITE_CHAT_ID,
+                        message_id=block_message_id,
+                        reply_markup=keyboard,
+                    )
+                except (TelegramBadRequest, TelegramForbiddenError) as exc:
+                    if "message is not modified" not in str(exc).lower():
+                        block_message_id = None
+            if not block_message_id:
+                blocked = await query.message.answer(
+                    BLOCKED_ACCEPT_TEXT, reply_markup=keyboard
+                )
+                await set_candidate_rules_block_message(
+                    candidate_user_id, INVITE_CHAT_ID, blocked.message_id
+                )
+            logger.info(
+                "Candidate accept blocked by rules",
+                extra={"user_id": candidate_user_id},
+            )
+            await query.answer()
+            return
         try:
             invite = await query.bot.create_chat_invite_link(
                 chat_id=MAIN_CHAT_ID,
