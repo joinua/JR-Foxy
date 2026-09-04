@@ -25,6 +25,9 @@ from app.handlers.profile import router as profile_router
 from app.handlers.warnings import router as warnings_router
 from app.handlers.rules_reminder import router as rules_reminder_router
 from app.handlers.talktop import router as talktop_router
+from app.handlers.events import router as events_router
+from app.services.event_service import reconcile_startup as reconcile_events_startup
+from app.services.event_jobs import register_event_draft_cleanup_task
 from app.services.silence import run_silence_scheduler
 from app.services.db_scheduler import register_tiktok_task, run_db_scheduler
 from app.services.birthday_reminders import register_birthday_daily_task
@@ -51,6 +54,7 @@ ROUTERS = (
     call_router,
     rules_reminder_router,
     talktop_router,
+    events_router,
     collect_router,
     warnings_router,
 )
@@ -80,11 +84,13 @@ async def main() -> None:
     setup_routers()
 
     await init_db()
+    await reconcile_events_startup()
     await add_admin(BOT_OWNER_ID)
     await set_admin_level(BOT_OWNER_ID, 4)
     await register_tiktok_task()
     await register_birthday_daily_task(catch_up_today=True)
     await register_daily_talktop_task()
+    await register_event_draft_cleanup_task()
 
     me = await bot.get_me()
     HEALTH_FILE.touch()
