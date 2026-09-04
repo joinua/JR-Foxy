@@ -79,6 +79,44 @@ def draft_form_keyboard(admin_id: int, *, has_description: bool) -> InlineKeyboa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def edit_form_keyboard(admin_id: int, *, has_description: bool) -> InlineKeyboardMarkup:
+    prefix = f"ev:a:{admin_id}:"
+    rows = [
+        [
+            _button("📝 Назва", prefix + "field_title"),
+            _button("🏷 Тип", prefix + "field_type"),
+        ],
+        [
+            _button("📅 Дата", prefix + "field_date"),
+            _button("🕒 Час", prefix + "field_time"),
+        ],
+        [_button("📄 Опис", prefix + "field_description")],
+    ]
+    if has_description:
+        rows.append([_button("🧹 Прибрати опис", prefix + "clear_description")])
+    rows.extend(
+        [
+            [_button("👁 Попередній перегляд", prefix + "preview")],
+            [_button("💾 Зберегти всі зміни", prefix + "save_changes")],
+            [
+                _button("🗑 Скасувати редагування", prefix + "delete_ask"),
+                _button("↩️ Назад", prefix + "menu"),
+            ],
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def edit_preview_keyboard(admin_id: int) -> InlineKeyboardMarkup:
+    prefix = f"ev:a:{admin_id}:"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button("💾 Зберегти всі зміни", prefix + "save_changes")],
+            [_button("↩️ До редагування", prefix + "continue")],
+        ]
+    )
+
+
 def back_to_form_keyboard(admin_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -177,5 +215,37 @@ def recover_publication_keyboard(admin_id: int, event_id: int) -> InlineKeyboard
             [_button("📢 Опублікувати повторно", prefix + f"republish_{event_id}")],
             [_button("🚫 Скасувати подію", prefix + f"cancel_missing_{event_id}")],
             [_button("↩️ Назад", prefix + "missing")],
+        ]
+    )
+
+
+def editable_events_keyboard(admin_id: int, events: list[dict]) -> InlineKeyboardMarkup:
+    prefix = f"ev:a:{admin_id}:"
+    rows = [
+        [_button(f"✏️ {str(event['title'])[:40]}", prefix + f"edit_event_{event['id']}")]
+        for event in events
+    ]
+    rows.append([_button("↩️ Назад", prefix + "menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reminder_events_keyboard(admin_id: int, events: list[dict]) -> InlineKeyboardMarkup:
+    prefix = f"ev:a:{admin_id}:"
+    rows = [
+        [_button(f"🔔 {str(event['title'])[:40]}", prefix + f"remind_{event['id']}")]
+        for event in events
+    ]
+    rows.append([_button("↩️ Назад", prefix + "menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reminder_audience_keyboard(admin_id: int, event_id: int) -> InlineKeyboardMarkup:
+    prefix = f"ev:a:{admin_id}:remind_send_{event_id}_"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button("✅ Учасникам", prefix + "going")],
+            [_button("🤔 Тим, хто думає", prefix + "thinking")],
+            [_button("👥 Обом групам", prefix + "both")],
+            [_button("↩️ Назад", f"ev:a:{admin_id}:remind")],
         ]
     )

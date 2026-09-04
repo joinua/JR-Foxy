@@ -30,8 +30,14 @@ from app.services.birthday_reminders import (
 )
 from app.services.talktop import TALKTOP_DAILY_TASK, send_daily_talktop
 from app.services.event_jobs import (
+    EVENT_AUTO_REMINDER_TASK,
     EVENT_DRAFT_CLEANUP_TASK,
+    EVENT_REGISTRATION_CLOSE_TASK,
+    EVENT_START_TASK,
+    run_event_auto_reminder,
     run_event_draft_cleanup,
+    run_event_registration_close,
+    run_event_start,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,6 +144,12 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
                     await send_daily_talktop(bot)
                 elif task["task_type"] == EVENT_DRAFT_CLEANUP_TASK:
                     await run_event_draft_cleanup()
+                elif task["task_type"] == EVENT_AUTO_REMINDER_TASK:
+                    await run_event_auto_reminder(bot, task)
+                elif task["task_type"] == EVENT_REGISTRATION_CLOSE_TASK:
+                    await run_event_registration_close(bot, task)
+                elif task["task_type"] == EVENT_START_TASK:
+                    await run_event_start(bot, task)
                 await mark_task_done(task_id)
             except Exception as exc:
                 logger.exception("db scheduler task failed", extra={"task_id": task_id})
