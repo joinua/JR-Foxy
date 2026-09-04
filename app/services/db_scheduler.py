@@ -15,6 +15,7 @@ from app.core.db import (
     mark_task_done,
     mark_task_failed,
     mark_task_running,
+    recover_stale_running_tasks,
     set_candidate_buttons_message,
     schedule_task,
     cancel_pending_tasks,
@@ -30,6 +31,8 @@ from app.services.birthday_reminders import (
 from app.services.talktop import TALKTOP_DAILY_TASK, send_daily_talktop
 
 logger = logging.getLogger(__name__)
+SCHEDULER_LEASE_SECONDS = 5 * 60
+SCHEDULER_RECOVERY_INTERVAL_SECONDS = 60
 
 REVIEW_BUTTONS_TEXT = (
     "Настав час адміністрації прийняти рішення щодо кандидата. Натисніть  на одну з трьох "
@@ -98,7 +101,18 @@ async def _handle_invite_review_due(bot: Bot, task: dict) -> None:
 
 
 async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
+    last_recovery = 0.0
     while True:
+        monotonic_now = asyncio.get_running_loop().time()
+        if monotonic_now - last_recovery >= SCHEDULER_RECOVERY_INTERVAL_SECONDS:
+            recovered = await recover_stale_running_tasks(SCHEDULER_LEASE_SECONDS)
+            if recovered["recovered"] or recovered["failed"]:
+                logger.warning(
+                    "recovered stale scheduler tasks",
+                    extra=recovered,
+                )
+            last_recovery = monotonic_now
+
         tasks = await fetch_due_tasks(limit=30)
 
         for task in tasks:

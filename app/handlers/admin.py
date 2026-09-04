@@ -4,6 +4,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.core.access import has_admin_level
 from app.core.config import BOT_OWNER_ID, FAMILY_CHAT_ID, MAIN_CHAT_ID
 from app.core.db import (
     add_admin,
@@ -92,8 +93,7 @@ async def require_level(message: Message, min_level: int) -> bool:
         await message.answer("Недостатній рівень.")
         return False
 
-    level = await get_admin_level(message.from_user.id)
-    if level < min_level:
+    if not await has_admin_level(message.from_user.id, min_level):
         await message.answer("Недостатній рівень.")
         return False
 
