@@ -66,6 +66,18 @@ jobs:
       - name: Check out the exact deployment commit
         uses: actions/checkout@v5
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m unittest discover -s tests -v
+
       - name: Build the deployment image
         run: |
           set -euo pipefail

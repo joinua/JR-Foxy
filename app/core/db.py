@@ -7,10 +7,37 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from app.dao.event_schema import ensure_event_schema
+
 DB_PATH = Path("data") / "jrfoxy.db"
 WELCOME_HTML_KEY = "welcome_text"
 RULES_URL_KEY = "rules_url"
 logger = logging.getLogger(__name__)
+
+
+async def _ensure_scheduled_tasks_schema(db: aiosqlite.Connection) -> None:
+    """Add idempotency and lease fields to the existing scheduler table."""
+
+    cursor = await db.execute("PRAGMA table_info(scheduled_tasks)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    additions = {
+        "dedupe_key": "TEXT",
+        "locked_at": "INTEGER",
+        "max_attempts": "INTEGER NOT NULL DEFAULT 4",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            await db.execute(
+                f"ALTER TABLE scheduled_tasks ADD COLUMN {name} {definition}"
+            )
+
+    await db.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_scheduled_tasks_dedupe_key
+        ON scheduled_tasks (dedupe_key)
+        WHERE dedupe_key IS NOT NULL
+        """
+    )
 
 
 async def _ensure_warnings_schema(db: aiosqlite.Connection) -> None:
@@ -246,6 +273,8 @@ async def init_db() -> None:
         await _ensure_warnings_schema(db)
         await _ensure_candidates_schema(db)
         await _ensure_birthday_schema(db)
+        await _ensure_scheduled_tasks_schema(db)
+        await ensure_event_schema(db)
         await db.commit()
 
 
@@ -890,7 +919,13 @@ async def schedule_task(
     chat_id: int | None = None,
     user_id: int | None = None,
     payload_json: str | None = None,
+    *,
+    dedupe_key: str | None = None,
+    max_attempts: int = 4,
 ) -> int:
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -903,15 +938,40 @@ async def schedule_task(
                 user_id,
                 payload_json,
                 tries,
+                dedupe_key,
+                locked_at,
+                max_attempts,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, 'pending', ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, 'pending', ?, ?, ?, 0, ?, NULL, ?, ?, ?)
+            ON CONFLICT(dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
             """,
-            (task_type, run_at, chat_id, user_id, payload_json, now, now),
+            (
+                task_type,
+                run_at,
+                chat_id,
+                user_id,
+                payload_json,
+                dedupe_key,
+                max_attempts,
+                now,
+                now,
+            ),
         )
+        if cur.rowcount == 0:
+            existing = await db.execute(
+                "SELECT id FROM scheduled_tasks WHERE dedupe_key=?",
+                (dedupe_key,),
+            )
+            row = await existing.fetchone()
+            if row is None:
+                raise RuntimeError("deduplicated task disappeared before lookup")
+            task_id = int(row[0])
+        else:
+            task_id = int(cur.lastrowid)
         await db.commit()
-        return int(cur.lastrowid)
+        return task_id
 
 
 async def cancel_pending_tasks(
@@ -945,7 +1005,9 @@ async def fetch_due_tasks(limit: int = 20) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """
-            SELECT id, task_type, run_at, status, chat_id, user_id, payload_json, tries
+            SELECT
+                id, task_type, run_at, status, chat_id, user_id,
+                payload_json, tries, dedupe_key, locked_at, max_attempts
             FROM scheduled_tasks
             WHERE status='pending' AND run_at<=?
             ORDER BY run_at ASC, id ASC
@@ -965,6 +1027,9 @@ async def fetch_due_tasks(limit: int = 20) -> list[dict]:
             "user_id": row[5],
             "payload_json": row[6],
             "tries": int(row[7]),
+            "dedupe_key": row[8],
+            "locked_at": row[9],
+            "max_attempts": int(row[10]),
         }
         for row in rows
     ]
@@ -976,10 +1041,10 @@ async def mark_task_running(task_id: int) -> bool:
         cur = await db.execute(
             """
             UPDATE scheduled_tasks
-            SET status='running', updated_at=?
+            SET status='running', locked_at=?, updated_at=?
             WHERE id=? AND status='pending'
             """,
-            (now, task_id),
+            (now, now, task_id),
         )
         await db.commit()
         return cur.rowcount > 0
@@ -989,7 +1054,11 @@ async def mark_task_done(task_id: int) -> None:
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE scheduled_tasks SET status='done', updated_at=? WHERE id=?",
+            """
+            UPDATE scheduled_tasks
+            SET status='done', locked_at=NULL, updated_at=?
+            WHERE id=? AND status='running'
+            """,
             (now, task_id),
         )
         await db.commit()
@@ -1003,15 +1072,70 @@ async def mark_task_failed(task_id: int, error_text: str) -> None:
             UPDATE scheduled_tasks
             SET
                 tries=tries+1,
-                status=CASE WHEN tries+1 <= 3 THEN 'pending' ELSE 'failed' END,
-                run_at=CASE WHEN tries+1 <= 3 THEN ? + (30 * (tries+1)) ELSE run_at END,
+                status=CASE
+                    WHEN tries+1 < max_attempts THEN 'pending'
+                    ELSE 'failed'
+                END,
+                run_at=CASE
+                    WHEN tries+1 < max_attempts THEN ? + (30 * (tries+1))
+                    ELSE run_at
+                END,
+                locked_at=NULL,
                 last_error=?,
                 updated_at=?
-            WHERE id=?
+            WHERE id=? AND status='running'
             """,
             (now, error_text[:1000], now, task_id),
         )
         await db.commit()
+
+
+async def recover_stale_running_tasks(
+    lease_seconds: int = 5 * 60,
+    *,
+    now: int | None = None,
+) -> dict[str, int]:
+    """Return expired running jobs to pending or fail exhausted jobs."""
+
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be positive")
+
+    current = int(time.time()) if now is None else int(now)
+    stale_before = current - lease_seconds
+    async with aiosqlite.connect(DB_PATH) as db:
+        pending = await db.execute(
+            """
+            UPDATE scheduled_tasks
+            SET
+                tries=tries+1,
+                status='pending',
+                locked_at=NULL,
+                run_at=MIN(run_at, ?),
+                last_error='worker lease expired',
+                updated_at=?
+            WHERE status='running'
+              AND COALESCE(locked_at, updated_at) <= ?
+              AND tries+1 < max_attempts
+            """,
+            (current, current, stale_before),
+        )
+        failed = await db.execute(
+            """
+            UPDATE scheduled_tasks
+            SET
+                tries=tries+1,
+                status='failed',
+                locked_at=NULL,
+                last_error='worker lease expired; attempts exhausted',
+                updated_at=?
+            WHERE status='running'
+              AND COALESCE(locked_at, updated_at) <= ?
+              AND tries+1 >= max_attempts
+            """,
+            (current, stale_before),
+        )
+        await db.commit()
+        return {"recovered": pending.rowcount, "failed": failed.rowcount}
 
 async def increment_daily_talk_activity(
     chat_id: int,

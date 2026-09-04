@@ -12,8 +12,12 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.core.bot import bot
-from app.core.config import ADMIN_LOG_CHAT_ID, ALLOWED_CHATS, BOT_OWNER_ID, MAIN_CHAT_ID
-from app.core.db import get_admin_level
+from app.core.access import (
+    get_effective_admin_level,
+    is_admin_chat,
+    is_admin_safe_chat,
+)
+from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID
 from app.handlers.profile.profile import PROFILE_NOT_FOUND
 from app.handlers.profile.utils import has_explicit_user_reply, parse_user_date
 from app.services import profile_service
@@ -27,20 +31,10 @@ TARGET_NOT_FOUND = (
 )
 PROFILE_AUDIT_LOADING_TEXT = "⏳ Збираю дані профілів з основного чату..."
 DELETE_AUDIT_FORMAT = "Формат: /deleteaudit @username або /deleteaudit user_id"
-ADMIN_CHAT_IDS = {
-    chat_id for chat_id, name in ALLOWED_CHATS.items() if "адміністрац" in name.lower()
-}
-ADMIN_CHAT_IDS.add(ADMIN_LOG_CHAT_ID)
-OFFICER_CHAT_IDS = {
-    chat_id for chat_id, name in ALLOWED_CHATS.items() if "офіц" in name.lower()
-}
-ADMIN_SAFE_CHAT_IDS = ADMIN_CHAT_IDS | OFFICER_CHAT_IDS
-
-
 async def _effective_admin_level(user_id: int) -> int:
-    if user_id == BOT_OWNER_ID:
-        return 4
-    return await get_admin_level(user_id)
+    """Compatibility wrapper for existing profile handlers and tests."""
+
+    return await get_effective_admin_level(user_id)
 
 
 def _is_private(message: Message) -> bool:
@@ -48,11 +42,11 @@ def _is_private(message: Message) -> bool:
 
 
 def _in_admin_chat(message: Message) -> bool:
-    return message.chat.id in ADMIN_CHAT_IDS
+    return is_admin_chat(message.chat.id)
 
 
 def _in_admin_safe_chat(message: Message) -> bool:
-    return message.chat.id in ADMIN_SAFE_CHAT_IDS
+    return is_admin_safe_chat(message.chat.id)
 
 
 async def _resolve_profile_command_target(
