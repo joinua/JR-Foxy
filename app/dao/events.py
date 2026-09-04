@@ -715,6 +715,18 @@ async def get_event_card(event_id: int) -> dict[str, Any] | None:
 
         cursor = await db.execute(
             """
+            SELECT result, COUNT(*) AS amount
+            FROM event_results WHERE event_id=? GROUP BY result
+            """,
+            (event_id,),
+        )
+        result["result_counts"] = {
+            str(row["result"]): int(row["amount"])
+            for row in await cursor.fetchall()
+        }
+
+        cursor = await db.execute(
+            """
             SELECT chat_id, message_id, published_at
             FROM event_publications
             WHERE event_id=? AND is_current=1
@@ -927,6 +939,8 @@ async def apply_edit_draft(
                 UPDATE events
                 SET title=?, event_type=?, description=?, starts_at_utc=?,
                     safe_until_utc=?, registration_closes_at_utc=?, status=?,
+                    review_created_at=CASE WHEN ? THEN NULL ELSE review_created_at END,
+                    finalized_at=CASE WHEN ? THEN NULL ELSE finalized_at END,
                     updated_at=?, version=version+1
                 WHERE id=? AND version=?
                 """,
@@ -938,6 +952,8 @@ async def apply_edit_draft(
                     safe_until_utc,
                     registration_closes_at_utc,
                     next_status,
+                    int(rescheduled),
+                    int(rescheduled),
                     now,
                     event_id,
                     event["base_version"],
@@ -968,6 +984,19 @@ async def apply_edit_draft(
                         ELSE 'event rescheduled'
                     END
                 WHERE event_id=? AND kind='auto_reminder'
+                """,
+                (now, now, event_id),
+            )
+            await db.execute(
+                """
+                UPDATE event_notifications
+                SET kind=kind || '_stale',
+                    dedupe_key=dedupe_key || ':stale:' || id || ':' || ?,
+                    status=CASE WHEN status='sent' THEN status ELSE 'skipped' END,
+                    skipped_at=CASE WHEN status='sent' THEN skipped_at ELSE ? END,
+                    error=CASE WHEN status='sent' THEN error ELSE 'event rescheduled' END
+                WHERE event_id=?
+                  AND kind IN ('review_create', 'review_reminder')
                 """,
                 (now, now, event_id),
             )

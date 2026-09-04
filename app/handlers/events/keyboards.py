@@ -249,3 +249,100 @@ def reminder_audience_keyboard(admin_id: int, event_id: int) -> InlineKeyboardMa
             [_button("↩️ Назад", f"ev:a:{admin_id}:remind")],
         ]
     )
+
+
+def review_events_keyboard(
+    events: list[dict],
+    *,
+    back_admin_id: int,
+    page: int = 0,
+    pages: int = 1,
+) -> InlineKeyboardMarkup:
+    rows = []
+    for event in events:
+        icon = "📋" if event["status"] == "awaiting_review" else "✅"
+        rows.append(
+            [_button(f"{icon} {str(event['title'])[:40]}", f"ev:v:{event['id']}:open:0")]
+        )
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(_button("‹", f"ev:a:{back_admin_id}:reviews_page_{page - 1}"))
+        nav.append(_button(f"{page + 1}/{pages}", f"ev:a:{back_admin_id}:noop"))
+        if page + 1 < pages:
+            nav.append(_button("›", f"ev:a:{back_admin_id}:reviews_page_{page + 1}"))
+        rows.append(nav)
+    rows.append([_button("↩️ Назад", f"ev:a:{back_admin_id}:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def review_keyboard(review: dict) -> InlineKeyboardMarkup:
+    event_id = int(review["id"])
+    page = int(review["page"])
+    prefix = f"ev:v:{event_id}:"
+    rows: list[list[InlineKeyboardButton]] = []
+    symbols = {"present": "✅", "no_show": "❌", "late_decline": "🕒", "excluded": "➖", None: "▫️"}
+    for offset, player in enumerate(review["players"], start=page * 10 + 1):
+        user_id = int(player["user_id"])
+        current = symbols.get(player.get("result"), "▫️")
+        if review["status"] == "awaiting_review":
+            rows.append(
+                [
+                    _button(f"{offset} ✅", prefix + f"set:{user_id}:present:{page}"),
+                    _button(f"{offset} ❌", prefix + f"set:{user_id}:no_show:{page}"),
+                    _button(f"{offset} 🕒", prefix + f"set:{user_id}:late_decline:{page}"),
+                    _button(f"{offset} ➖", prefix + f"exclude:{user_id}:{page}"),
+                ]
+            )
+        else:
+            rows.append(
+                [_button(f"{offset} {current} — змінити", prefix + f"correct:{user_id}:{page}")]
+            )
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(_button("‹", prefix + f"open:{page - 1}"))
+    nav.append(_button(f"{page + 1}/{review['pages']}", prefix + "noop"))
+    if page + 1 < int(review["pages"]):
+        nav.append(_button("›", prefix + f"open:{page + 1}"))
+    rows.append(nav)
+    if review["status"] == "awaiting_review":
+        rows.append([_button("✅ Завершити перевірку", prefix + f"finalize:{page}")])
+    elif review["status"] == "completed":
+        rows.append([_button("⛔ Анулювати подію", prefix + "annul")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def correction_result_keyboard(event_id: int, user_id: int, page: int) -> InlineKeyboardMarkup:
+    prefix = f"ev:v:{event_id}:correct_result:{user_id}:"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button("✅ Присутній", prefix + f"present:{page}"),
+                _button("❌ Неявка", prefix + f"no_show:{page}"),
+            ],
+            [
+                _button("🕒 Пізня відмова", prefix + f"late_decline:{page}"),
+                _button("➖ Не враховувати", prefix + f"excluded:{page}"),
+            ],
+            [_button("↩️ Назад", f"ev:v:{event_id}:open:{page}")],
+        ]
+    )
+
+
+def cancellable_events_keyboard(admin_id: int, events: list[dict]) -> InlineKeyboardMarkup:
+    prefix = f"ev:a:{admin_id}:"
+    rows = [
+        [_button(f"🚫 {str(event['title'])[:40]}", prefix + f"cancel_event_{event['id']}")]
+        for event in events
+    ]
+    rows.append([_button("↩️ Назад", prefix + "menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cancel_confirm_keyboard(admin_id: int, event_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button("⚠️ Підтвердити скасування", f"ev:a:{admin_id}:cancel_confirm_{event_id}")],
+            [_button("↩️ Назад", f"ev:a:{admin_id}:cancel")],
+        ]
+    )

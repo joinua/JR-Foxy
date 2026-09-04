@@ -304,6 +304,7 @@ class EventCreationTests(unittest.IsolatedAsyncioTestCase):
                 "event_auto_reminder",
                 "event_registration_close",
                 "event_start",
+                "event_review_create",
             },
         )
 

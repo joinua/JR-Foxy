@@ -15,10 +15,13 @@ from app.core.access import can_manage_events, get_effective_admin_level
 from app.core.dates import today_kyiv
 from app.dao import events as events_dao
 from app.dao import event_lifecycle as lifecycle_dao
+from app.dao import event_reviews as reviews_dao
 from app.handlers.events.keyboards import (
     admin_menu_keyboard,
     back_to_form_keyboard,
     calendar_keyboard,
+    cancellable_events_keyboard,
+    cancel_confirm_keyboard,
     delete_draft_keyboard,
     draft_form_keyboard,
     editable_events_keyboard,
@@ -31,9 +34,10 @@ from app.handlers.events.keyboards import (
     recover_publication_keyboard,
     reminder_audience_keyboard,
     reminder_events_keyboard,
+    review_events_keyboard,
     type_keyboard,
 )
-from app.handlers.events.states import EventDraftInput
+from app.handlers.events.states import EventDraftInput, EventReviewInput
 from app.services import event_service
 from app.services.event_notifications import send_manual_reminder
 from app.services.event_render import (
@@ -183,6 +187,10 @@ async def event_admin_callback(callback: CallbackQuery, state: FSMContext) -> No
     admin_id = int(parts[2])
     action = parts[3]
     if not await _check_callback(callback, admin_id):
+        return
+
+    if action == "noop":
+        await callback.answer()
         return
 
     if action == "menu":
@@ -358,11 +366,57 @@ async def event_admin_callback(callback: CallbackQuery, state: FSMContext) -> No
             await callback.answer("Результат доставки невідомий.", show_alert=True)
         return
 
-    if action.startswith("cancel_missing_"):
-        await callback.answer(
-            "Скасування з обов’язковою причиною буде додано в етапі керування подіями.",
-            show_alert=True,
+    if action.startswith("cancel_missing_") or action.startswith("cancel_event_"):
+        marker = "cancel_missing_" if action.startswith("cancel_missing_") else "cancel_event_"
+        try:
+            event_id = int(action.removeprefix(marker))
+        except ValueError:
+            await callback.answer("Некоректна подія.", show_alert=True)
+            return
+        await state.set_state(EventReviewInput.cancellation_reason)
+        await state.update_data(
+            event_id=event_id,
+            admin_id=admin_id,
+            panel_chat_id=callback.message.chat.id,
+            panel_message_id=callback.message.message_id,
         )
+        await callback.message.edit_text(
+            "Надішліть коротку причину скасування одним повідомленням — "
+            "від 3 до 300 символів."
+        )
+        await callback.answer()
+        return
+
+    if action.startswith("cancel_confirm_"):
+        data = await state.get_data()
+        try:
+            event_id = int(action.removeprefix("cancel_confirm_"))
+        except ValueError:
+            await callback.answer("Некоректна подія.", show_alert=True)
+            return
+        if int(data.get("event_id", 0)) != event_id or not data.get("reason"):
+            await callback.answer("Підтвердження застаріло.", show_alert=True)
+            return
+        result = await reviews_dao.request_or_cancel(
+            event_id,
+            actor_id=admin_id,
+            reason=str(data["reason"]),
+            now=event_service.now_timestamp(),
+        )
+        if result.code != "cancelled":
+            await callback.answer("Подію вже не можна скасувати.", show_alert=True)
+            return
+        await state.clear()
+        from app.services.event_reviews import publish_cancellation
+
+        await publish_cancellation(callback.bot, event_id)
+        await _show_menu(
+            callback.message,
+            admin_id,
+            f'Подію «{result.title}» скасовано. Відповіді та результати '
+            "не впливатимуть на рейтинг.",
+        )
+        await callback.answer("Подію скасовано.")
         return
 
     if action == "remind":
@@ -451,11 +505,53 @@ async def event_admin_callback(callback: CallbackQuery, state: FSMContext) -> No
         await callback.answer()
         return
 
-    if action in {"cancel", "reviews"}:
-        await callback.answer(
-            "Цей розділ буде підключено в наступному етапі системи подій.",
-            show_alert=True,
+    if action == "cancel":
+        await state.clear()
+        events = await reviews_dao.list_cancellable_events()
+        if not events:
+            await _show_menu(callback.message, admin_id, "Немає подій для скасування.")
+        else:
+            await callback.message.edit_text(
+                "🚫 <b>Скасування події</b>\n\nОберіть подію.",
+                parse_mode="HTML",
+                reply_markup=cancellable_events_keyboard(admin_id, events),
+            )
+        await callback.answer()
+        return
+
+    if action == "reviews" or action.startswith("reviews_page_"):
+        await state.clear()
+        try:
+            page = 0 if action == "reviews" else max(
+                0, int(action.removeprefix("reviews_page_"))
+            )
+        except ValueError:
+            await callback.answer("Некоректна сторінка.", show_alert=True)
+            return
+        page_size = 10
+        total = await reviews_dao.count_reviews(include_completed=True)
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, pages - 1)
+        events = await reviews_dao.list_reviews(
+            include_completed=True,
+            limit=page_size,
+            offset=page * page_size,
         )
+        if not events:
+            await _show_menu(callback.message, admin_id, "Перевірок ще немає.")
+        else:
+            await callback.message.edit_text(
+                "📋 <b>Перевірки присутності</b>\n\n"
+                "Незавершені показані першими; завершені доступні для корекції.",
+                parse_mode="HTML",
+                reply_markup=review_events_keyboard(
+                    events,
+                    back_admin_id=admin_id,
+                    page=page,
+                    pages=pages,
+                ),
+            )
+        await callback.answer()
         return
 
     draft = await _load_panel_draft(callback, admin_id)
@@ -680,9 +776,6 @@ async def event_admin_callback(callback: CallbackQuery, state: FSMContext) -> No
         else:
             await callback.answer("Публікація вже обробляється.", show_alert=True)
             return
-    elif action == "noop":
-        await callback.answer()
-        return
     else:
         await callback.answer("Невідома дія.", show_alert=True)
         return
@@ -784,3 +877,46 @@ async def event_time_input(message: Message, state: FSMContext) -> None:
 @router.message(EventDraftInput.description)
 async def event_description_input(message: Message, state: FSMContext) -> None:
     await _handle_text_field(message, state, "description")
+
+
+@router.message(EventReviewInput.cancellation_reason)
+async def event_cancellation_reason_input(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    if (
+        not message.from_user
+        or message.from_user.id != int(data.get("admin_id", 0))
+        or message.chat.id != int(data.get("panel_chat_id", 0))
+        or not await can_manage_events(message.from_user.id, message.chat.id)
+    ):
+        return
+    reason = (message.text or "").strip()
+    deleted = await _delete_input(message)
+    if not 3 <= len(reason) <= 300:
+        await message.bot.edit_message_text(
+            "Причина повинна містити від 3 до 300 символів.",
+            chat_id=int(data["panel_chat_id"]),
+            message_id=int(data["panel_message_id"]),
+        )
+        return
+    result = await reviews_dao.request_or_cancel(
+        int(data["event_id"]),
+        actor_id=message.from_user.id,
+        reason=reason,
+        now=event_service.now_timestamp(),
+    )
+    if result.code != "confirm":
+        await state.clear()
+        await message.bot.edit_message_text(
+            "Подію вже не можна скасувати.",
+            chat_id=int(data["panel_chat_id"]),
+            message_id=int(data["panel_message_id"]),
+        )
+        return
+    await state.update_data(reason=reason)
+    notice = "\n\n" + INPUT_DELETE_WARNING if not deleted else ""
+    await message.bot.edit_message_text(
+        f'⚠️ Скасувати подію «{result.title}»?\nПричина: {reason}{notice}',
+        chat_id=int(data["panel_chat_id"]),
+        message_id=int(data["panel_message_id"]),
+        reply_markup=cancel_confirm_keyboard(message.from_user.id, int(data["event_id"])),
+    )

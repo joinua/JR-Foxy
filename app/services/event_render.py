@@ -114,6 +114,15 @@ def render_public_card(event: dict[str, Any], *, preview: bool = False) -> str:
                 f"Причина: {escape(str(event.get('cancel_reason') or 'не вказана'))}",
             )
         )
+    if status == "annulled":
+        return "\n".join(
+            (
+                f'⛔ <b>Подію «{title}» анульовано</b>',
+                "",
+                f"Дата та час: {format_ua_datetime(int(event['starts_at_utc']))}",
+                f"Причина: {escape(str(event.get('annul_reason') or 'не вказана'))}",
+            )
+        )
     event_type = EVENT_TYPE_LABELS.get(str(event["event_type"]), "невідомий")
     description = str(event.get("description") or "").strip()
     participants = event.get("participants") or []
@@ -127,6 +136,20 @@ def render_public_card(event: dict[str, Any], *, preview: bool = False) -> str:
     ]
     if description:
         lines.append(f"Опис: {escape(description)}")
+    if status == "completed":
+        counts = event.get("result_counts") or {}
+        lines.extend(
+            (
+                "Статус: ✅ перевірку завершено",
+                "",
+                "Підсумки:",
+                f"✅ Присутні: {int(counts.get('present', 0))}",
+                f"❌ Не з’явилися: {int(counts.get('no_show', 0))}",
+                f"🕒 Пізня відмова: {int(counts.get('late_decline', 0))}",
+                f"➖ Не враховано: {int(counts.get('excluded', 0))}",
+            )
+        )
+        return "\n".join(lines)
     if status == "registration_closed":
         lines.append("Статус: реєстрацію завершено")
     elif status in {"started", "awaiting_review"}:

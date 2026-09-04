@@ -386,6 +386,8 @@ async def apply_edit_draft(
         from app.services.event_jobs import (
             EVENT_AUTO_REMINDER_TASK,
             EVENT_REGISTRATION_CLOSE_TASK,
+            EVENT_REVIEW_CREATE_TASK,
+            EVENT_REVIEW_REMINDER_TASK,
             EVENT_START_TASK,
             schedule_event_jobs,
         )
@@ -395,6 +397,8 @@ async def apply_edit_draft(
                 EVENT_AUTO_REMINDER_TASK,
                 EVENT_REGISTRATION_CLOSE_TASK,
                 EVENT_START_TASK,
+                EVENT_REVIEW_CREATE_TASK,
+                EVENT_REVIEW_REMINDER_TASK,
             ):
                 await cancel_pending_tasks(task_type, user_id=result["event_id"])
             await schedule_event_jobs(
@@ -559,9 +563,10 @@ async def publish_draft(
 async def reconcile_startup(*, now: int | None = None) -> int:
     current = now_timestamp() if now is None else now
     reconciled = await events_dao.reconcile_incomplete_publications(now=current)
-    from app.services.event_jobs import rebuild_event_jobs
+    from app.services.event_jobs import rebuild_event_jobs, rebuild_review_jobs
 
     await rebuild_event_jobs(now=current)
+    await rebuild_review_jobs(now=current)
     return reconciled
 
 

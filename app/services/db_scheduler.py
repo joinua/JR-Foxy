@@ -34,10 +34,14 @@ from app.services.event_jobs import (
     EVENT_DRAFT_CLEANUP_TASK,
     EVENT_REGISTRATION_CLOSE_TASK,
     EVENT_START_TASK,
+    EVENT_REVIEW_CREATE_TASK,
+    EVENT_REVIEW_REMINDER_TASK,
     run_event_auto_reminder,
     run_event_draft_cleanup,
     run_event_registration_close,
     run_event_start,
+    run_event_review_create,
+    run_event_review_reminder,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,6 +154,10 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
                     await run_event_registration_close(bot, task)
                 elif task["task_type"] == EVENT_START_TASK:
                     await run_event_start(bot, task)
+                elif task["task_type"] == EVENT_REVIEW_CREATE_TASK:
+                    await run_event_review_create(bot, task)
+                elif task["task_type"] == EVENT_REVIEW_REMINDER_TASK:
+                    await run_event_review_reminder(bot, task)
                 await mark_task_done(task_id)
             except Exception as exc:
                 logger.exception("db scheduler task failed", extra={"task_id": task_id})
