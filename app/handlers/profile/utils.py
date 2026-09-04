@@ -5,6 +5,9 @@ from __future__ import annotations
 import calendar
 from datetime import date, datetime
 from html import escape
+from typing import Any
+
+from aiogram.enums import MessageEntityType
 
 from app.core.dates import today_kyiv
 
@@ -95,13 +98,56 @@ def has_explicit_user_reply(message) -> bool:
 
     thread_id = getattr(message, "message_thread_id", None)
     reply_message_id = getattr(reply, "message_id", None)
-    if thread_id is not None and reply_message_id == thread_id:
+    if (
+        getattr(message, "is_topic_message", False)
+        and thread_id is not None
+        and reply_message_id == thread_id
+    ):
         return False
 
     if getattr(reply, "forum_topic_created", None) is not None:
         return False
 
     return True
+
+
+def resolve_command_user_reference(message) -> tuple[Any | int | None, list[str]]:
+    """Resolve a profile command target from reply or Telegram mention.
+
+    Telegram represents a clickable mention of a user without ``@username``
+    as a ``text_mention`` entity.  Returning the attached User keeps Telegram
+    ID as the source of truth.  Reply has priority over an inline mention.
+    """
+
+    text = getattr(message, "text", None) or ""
+    parts = text.split(maxsplit=1)
+    arguments = parts[1].strip() if len(parts) > 1 else ""
+
+    if has_explicit_user_reply(message):
+        return message.reply_to_message.from_user, arguments.split()
+
+    for entity in getattr(message, "entities", None) or ():
+        entity_type = getattr(entity, "type", None)
+        target: Any | int | None = None
+        if entity_type == MessageEntityType.TEXT_MENTION and getattr(
+            entity, "user", None
+        ):
+            target = entity.user
+        elif entity_type == MessageEntityType.TEXT_LINK:
+            url = str(getattr(entity, "url", None) or "")
+            prefix = "tg://user?id="
+            raw_user_id = url.removeprefix(prefix) if url.startswith(prefix) else ""
+            if raw_user_id.isdigit():
+                target = int(raw_user_id)
+
+        if target is None:
+            continue
+
+        mentioned_text = entity.extract_from(text)
+        remaining = arguments.replace(mentioned_text, "", 1).strip()
+        return target, remaining.split()
+
+    return None, arguments.split()
 
 
 def profile_owner_mention(profile: dict) -> str:

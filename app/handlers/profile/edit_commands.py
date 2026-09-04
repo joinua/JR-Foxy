@@ -10,7 +10,10 @@ from aiogram.types import Message
 
 from app.core.db import get_admin_level
 from app.handlers.profile.profile import PROFILE_NOT_FOUND
-from app.handlers.profile.utils import has_explicit_user_reply, parse_user_date
+from app.handlers.profile.utils import (
+    parse_user_date,
+    resolve_command_user_reference,
+)
 from app.services import profile_service
 
 router = Router()
@@ -25,9 +28,9 @@ async def _resolve_edit_target(message: Message) -> tuple[Any | int | None, list
     if not message.from_user:
         return None, []
 
-    parts = message.text.split()[1:] if message.text else []
-    if has_explicit_user_reply(message):
-        return message.reply_to_message.from_user, parts
+    target, parts = resolve_command_user_reference(message)
+    if target is not None:
+        return target, parts
     if parts and parts[0].startswith("@"):
         profile = await profile_service.find_profile_by_username(parts[0])
         return (profile["user_id"] if profile else None), parts[1:]
