@@ -143,6 +143,11 @@ class ProfileTargetHandlerTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=target_profile),
             ),
             patch.object(
+                profile_handler_module.reliability_service,
+                "get_summary",
+                AsyncMock(return_value=SimpleNamespace()),
+            ),
+            patch.object(
                 profile_handler_module,
                 "render_profile",
                 return_value="TARGET PROFILE",
@@ -185,6 +190,11 @@ class ProfileTargetHandlerTests(unittest.IsolatedAsyncioTestCase):
                 profile_handler_module.profile_service,
                 "fill_missing_join_date",
                 AsyncMock(return_value=target_profile),
+            ),
+            patch.object(
+                profile_handler_module.reliability_service,
+                "get_summary",
+                AsyncMock(return_value=SimpleNamespace()),
             ),
             patch.object(
                 profile_handler_module,

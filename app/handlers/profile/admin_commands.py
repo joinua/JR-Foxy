@@ -90,6 +90,7 @@ async def help_profile_handler(message: Message) -> None:
         "/profile @username — показати профіль гравця",
         "/profile зі згадкою — працює навіть без @username",
         "/profile у відповідь на повідомлення — показати профіль гравця",
+        "/reliability — показати власну детальну статистику надійності",
         "/nickname JRঐВашНік — вказати ігровий нік",
         "/uid 1234567891234567891 — вказати UID CODM, рівно 19 цифр",
         "/birthday 15.08.2000 — вказати дату народження",
@@ -106,6 +107,7 @@ async def help_profile_handler(message: Message) -> None:
         [
             "/role — змінити роль гравця. Доступно тільки Лідеру.",
             "/profileadmin — адмін-панель профілю",
+            "/reliability у reply, за @username або Telegram ID — статистика гравця (рівні 3–4 в адмін-чаті)",
         ]
     )
 

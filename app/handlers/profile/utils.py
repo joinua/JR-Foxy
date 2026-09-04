@@ -165,7 +165,9 @@ def is_bot_owner(user_id: int) -> bool:
     return user_id == BOT_OWNER_ID
 
 
-def render_profile(profile: dict) -> str:
+def render_profile(profile: dict, reliability_summary=None) -> str:
+    from app.services.reliability_service import render_profile_line
+
     birthday = date.fromisoformat(profile["birthday"]) if profile["birthday"] else None
     nickname = escape(profile["game_nickname"] or EMPTY_VALUE)
     uid = escape(profile["codm_uid"]) if profile["codm_uid"] else EMPTY_VALUE
@@ -185,6 +187,8 @@ def render_profile(profile: dict) -> str:
     role = escape(role_value or EMPTY_VALUE)
     owner_mention = profile_owner_mention(profile)
     divider = "━━━━━━━━━━━━"
+    reliability = render_profile_line(reliability_summary) if reliability_summary else None
+    reliability_block = f"{reliability}\n" if reliability else ""
 
     return (
         f"Профіль гравця клану {owner_mention}\n"
@@ -199,5 +203,6 @@ def render_profile(profile: dict) -> str:
         f"📥 Дата вступу в клан: {format_user_date(profile['join_date'])}\n"
         f"🛡 Стаж у клані: {clan_duration}\n"
         f"{divider}\n"
+        f"{reliability_block}"
         f"🏷 Роль у клані: {role}"
     )
