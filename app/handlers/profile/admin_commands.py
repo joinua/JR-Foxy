@@ -19,7 +19,11 @@ from app.core.access import (
 )
 from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID
 from app.handlers.profile.profile import PROFILE_NOT_FOUND
-from app.handlers.profile.utils import has_explicit_user_reply, parse_user_date
+from app.handlers.profile.utils import (
+    has_explicit_user_reply,
+    parse_user_date,
+    resolve_command_user_reference,
+)
 from app.services import profile_service
 
 router = Router()
@@ -27,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 ACCESS_DENIED = "Недостатньо прав для цієї команди."
 TARGET_NOT_FOUND = (
-    "Користувача не знайдено. Спробуйте використати команду у відповідь на повідомлення."
+    "Користувача не знайдено. Використайте команду у відповідь на його "
+    "повідомлення, @username або клікабельну згадку Telegram."
 )
 PROFILE_AUDIT_LOADING_TEXT = "⏳ Збираю дані профілів з основного чату..."
 DELETE_AUDIT_FORMAT = "Формат: /deleteaudit @username або /deleteaudit user_id"
@@ -52,9 +57,9 @@ def _in_admin_safe_chat(message: Message) -> bool:
 async def _resolve_profile_command_target(
     message: Message,
 ) -> tuple[Any | int | None, list[str]]:
-    parts = message.text.split()[1:] if message.text else []
-    if has_explicit_user_reply(message):
-        return message.reply_to_message.from_user, parts
+    target, parts = resolve_command_user_reference(message)
+    if target is not None:
+        return target, parts
     if parts and parts[0].startswith("@"):
         profile = await profile_service.find_profile_by_username(parts[0])
         return (profile["user_id"] if profile else None), parts[1:]
@@ -83,6 +88,7 @@ async def help_profile_handler(message: Message) -> None:
         "<b>Основні команди</b>",
         "/profile — показати свій профіль",
         "/profile @username — показати профіль гравця",
+        "/profile зі згадкою — працює навіть без @username",
         "/profile у відповідь на повідомлення — показати профіль гравця",
         "/nickname JRঐВашНік — вказати ігровий нік",
         "/uid 1234567891234567891 — вказати UID CODM, рівно 19 цифр",
