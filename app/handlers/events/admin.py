@@ -11,24 +11,31 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from app.core.access import can_manage_events
+from app.core.access import can_manage_events, get_effective_admin_level
 from app.core.dates import today_kyiv
 from app.dao import events as events_dao
+from app.dao import event_lifecycle as lifecycle_dao
 from app.handlers.events.keyboards import (
     admin_menu_keyboard,
     back_to_form_keyboard,
     calendar_keyboard,
     delete_draft_keyboard,
     draft_form_keyboard,
+    editable_events_keyboard,
+    edit_form_keyboard,
+    edit_preview_keyboard,
     existing_draft_keyboard,
     missing_events_keyboard,
     public_event_keyboard,
     publish_confirmation_keyboard,
     recover_publication_keyboard,
+    reminder_audience_keyboard,
+    reminder_events_keyboard,
     type_keyboard,
 )
 from app.handlers.events.states import EventDraftInput
 from app.services import event_service
+from app.services.event_notifications import send_manual_reminder
 from app.services.event_render import (
     render_admin_menu,
     render_calendar_title,
@@ -96,6 +103,17 @@ async def _load_panel_draft(
         )
         await callback.answer("Публікацію заблоковано від повтору.", show_alert=True)
         return None
+    if draft.get("draft_kind") == "edit" and draft.get(
+        "target_event_status"
+    ) not in {"published", "registration_closed", "started", "awaiting_review"}:
+        await events_dao.delete_draft(admin_id)
+        await _show_menu(
+            callback.message,
+            admin_id,
+            "Стан події змінився. Редагування припинено.",
+        )
+        await callback.answer("Чернетка редагування застаріла.", show_alert=True)
+        return None
     if (
         int(draft["menu_chat_id"]) != callback.message.chat.id
         or int(draft["menu_message_id"] or 0) != callback.message.message_id
@@ -112,12 +130,20 @@ async def _show_form(
     notice: str | None = None,
 ) -> None:
     payload = draft["payload"]
+    is_edit = draft.get("draft_kind") == "edit"
     await callback.message.edit_text(
-        render_draft_form(payload, notice),
+        render_draft_form(payload, notice, edit=is_edit),
         parse_mode="HTML",
-        reply_markup=draft_form_keyboard(
-            admin_id,
-            has_description=bool(payload.get("description")),
+        reply_markup=(
+            edit_form_keyboard(
+                admin_id,
+                has_description=bool(payload.get("description")),
+            )
+            if is_edit
+            else draft_form_keyboard(
+                admin_id,
+                has_description=bool(payload.get("description")),
+            )
         ),
     )
 
@@ -201,6 +227,68 @@ async def event_admin_callback(callback: CallbackQuery, state: FSMContext) -> No
         await callback.answer("Нову чернетку створено.")
         return
 
+    if action == "edit":
+        existing, _ = await event_service.load_draft(admin_id)
+        if existing:
+            await event_service.touch_draft_menu(
+                admin_id,
+                menu_chat_id=callback.message.chat.id,
+                menu_message_id=callback.message.message_id,
+            )
+            await callback.message.edit_text(
+                "📝 У вас уже є активна чернетка. Продовжити її чи видалити?",
+                reply_markup=existing_draft_keyboard(admin_id),
+            )
+            await callback.answer()
+            return
+        level = await get_effective_admin_level(admin_id)
+        current = event_service.now_timestamp()
+        events = await events_dao.list_editable_events(
+            now=current,
+            include_started=level >= 4,
+        )
+        if not events:
+            await _show_menu(
+                callback.message,
+                admin_id,
+                "Немає подій, доступних для редагування.",
+            )
+        else:
+            await callback.message.edit_text(
+                "✏️ <b>Редагування події</b>\n\nОберіть подію.",
+                parse_mode="HTML",
+                reply_markup=editable_events_keyboard(admin_id, events),
+            )
+        await callback.answer()
+        return
+
+    if action.startswith("edit_event_"):
+        try:
+            existing, _ = await event_service.load_draft(admin_id)
+            if existing:
+                await callback.answer(
+                    "Спочатку завершіть або видаліть активну чернетку.",
+                    show_alert=True,
+                )
+                return
+            event_id = int(action.removeprefix("edit_event_"))
+            draft = await event_service.create_edit_draft(
+                admin_id,
+                event_id,
+                admin_level=await get_effective_admin_level(admin_id),
+                menu_chat_id=callback.message.chat.id,
+                menu_message_id=callback.message.message_id,
+            )
+        except (ValueError, events_dao.EventEditPermissionError):
+            await callback.answer(
+                "Цю подію вже не можна редагувати.",
+                show_alert=True,
+            )
+            return
+        await _show_form(callback, admin_id, draft)
+        await callback.answer()
+        return
+
     if action == "missing":
         missing_events = await events_dao.list_missing_events()
         if not missing_events:
@@ -277,7 +365,93 @@ async def event_admin_callback(callback: CallbackQuery, state: FSMContext) -> No
         )
         return
 
-    if action in {"edit", "cancel", "remind", "reviews"}:
+    if action == "remind":
+        events = await lifecycle_dao.list_reminder_events(event_service.now_timestamp())
+        if not events:
+            await _show_menu(
+                callback.message,
+                admin_id,
+                "Немає активних подій для нагадування.",
+            )
+        else:
+            await callback.message.edit_text(
+                "🔔 <b>Ручне нагадування</b>\n\nОберіть подію.",
+                parse_mode="HTML",
+                reply_markup=reminder_events_keyboard(admin_id, events),
+            )
+        await callback.answer()
+        return
+
+    if action.startswith("remind_send_"):
+        try:
+            raw_event_id, audience = action.removeprefix("remind_send_").rsplit(
+                "_", 1
+            )
+            event_id = int(raw_event_id)
+            result = await send_manual_reminder(
+                callback.bot,
+                event_id,
+                audience=audience,
+                actor_id=admin_id,
+                now=event_service.now_timestamp(),
+            )
+        except ValueError:
+            await callback.answer("Некоректна дія.", show_alert=True)
+            return
+        except (TelegramBadRequest, TelegramForbiddenError):
+            await callback.answer(
+                "Не вдалося надіслати нагадування. Перевірте картку та права бота.",
+                show_alert=True,
+            )
+            return
+        if result.code == "sent":
+            await _show_menu(
+                callback.message,
+                admin_id,
+                f'Нагадування про подію «{result.title}» надіслано.',
+            )
+            await callback.answer("Нагадування надіслано.")
+        elif result.code == "cooldown":
+            minutes = max(1, (result.retry_after + 59) // 60)
+            await callback.answer(
+                f"Повторне нагадування буде доступне через {minutes} хв.",
+                show_alert=True,
+            )
+        elif result.code == "empty":
+            await callback.answer(
+                "У вибраній групі немає користувачів.",
+                show_alert=True,
+            )
+        elif result.code == "unknown":
+            await callback.answer(
+                "Результат доставки невідомий. Автоматичного повтору не буде.",
+                show_alert=True,
+            )
+        else:
+            await callback.answer(
+                "Нагадування для цієї події вже недоступне.",
+                show_alert=True,
+            )
+        return
+
+    if action.startswith("remind_"):
+        try:
+            event_id = int(action.removeprefix("remind_"))
+        except ValueError:
+            await callback.answer("Некоректна подія.", show_alert=True)
+            return
+        event = await events_dao.get_event_card(event_id)
+        if not event or event["status"] not in {"published", "registration_closed"}:
+            await callback.answer("Подія вже недоступна.", show_alert=True)
+            return
+        await callback.message.edit_text(
+            f'🔔 Кому нагадати про подію «{event["title"]}»?',
+            reply_markup=reminder_audience_keyboard(admin_id, event_id),
+        )
+        await callback.answer()
+        return
+
+    if action in {"cancel", "reviews"}:
         await callback.answer(
             "Цей розділ буде підключено в наступному етапі системи подій.",
             show_alert=True,
@@ -406,23 +580,68 @@ async def event_admin_callback(callback: CallbackQuery, state: FSMContext) -> No
         await callback.answer("Дату події збережено.")
         return
     elif action in {"preview", "prepare_publish"}:
+        if action == "prepare_publish" and draft.get("draft_kind") == "edit":
+            await callback.answer("Некоректна дія.", show_alert=True)
+            return
         try:
             validated = await event_service.validate_draft(draft)
         except event_service.EventValidationError as exc:
             await _show_form(callback, admin_id, draft, exc.message)
             await callback.answer("Перевірте дані форми.", show_alert=True)
             return
-        keyboard = (
-            publish_confirmation_keyboard(admin_id)
-            if action == "prepare_publish"
-            else back_to_form_keyboard(admin_id)
-        )
+        if draft.get("draft_kind") == "edit" and action == "preview":
+            keyboard = edit_preview_keyboard(admin_id)
+        else:
+            keyboard = (
+                publish_confirmation_keyboard(admin_id)
+                if action == "prepare_publish"
+                else back_to_form_keyboard(admin_id)
+            )
         await callback.message.edit_text(
             render_public_card(event_service.preview_event(validated), preview=True),
             parse_mode="HTML",
             reply_markup=keyboard,
             disable_web_page_preview=True,
         )
+    elif action == "save_changes":
+        if draft.get("draft_kind") != "edit":
+            await callback.answer("Це не чернетка редагування.", show_alert=True)
+            return
+        try:
+            result = await event_service.apply_edit_draft(
+                callback.bot,
+                admin_id,
+                admin_level=await get_effective_admin_level(admin_id),
+                reply_markup_factory=public_event_keyboard,
+            )
+        except event_service.EventValidationError as exc:
+            await _show_form(callback, admin_id, draft, exc.message)
+            await callback.answer("Зміни не збережено.", show_alert=True)
+            return
+        except events_dao.EventVersionError:
+            await events_dao.delete_draft(admin_id)
+            await _show_menu(
+                callback.message,
+                admin_id,
+                "Подію вже змінив інший адміністратор. Відкрийте її повторно.",
+            )
+            await callback.answer("Чернетка застаріла.", show_alert=True)
+            return
+        except events_dao.EventEditPermissionError:
+            await callback.answer(
+                "Подію вже не можна редагувати з вашим рівнем доступу.",
+                show_alert=True,
+            )
+            return
+        await state.clear()
+        notice = (
+            f'Подію «{result["title"]}» перенесено. Відповіді скинуто.'
+            if result["rescheduled"]
+            else f'Зміни події «{result["title"]}» збережено.'
+        )
+        await _show_menu(callback.message, admin_id, notice)
+        await callback.answer("Зміни збережено.")
+        return
     elif action == "publish":
         try:
             result = await event_service.publish_draft(
@@ -517,17 +736,37 @@ async def _handle_text_field(message: Message, state: FSMContext, field: str) ->
             reply_markup=admin_menu_keyboard(message.from_user.id),
         )
         return
+    except events_dao.PublicationStateError:
+        await state.clear()
+        await message.bot.edit_message_text(
+            "Стан події змінився. Редагування припинено.",
+            chat_id=panel_chat_id,
+            message_id=panel_message_id,
+            reply_markup=admin_menu_keyboard(message.from_user.id),
+        )
+        return
 
     await state.clear()
     notice = None if deleted else INPUT_DELETE_WARNING
     await message.bot.edit_message_text(
-        render_draft_form(draft["payload"], notice),
+        render_draft_form(
+            draft["payload"],
+            notice,
+            edit=draft.get("draft_kind") == "edit",
+        ),
         chat_id=panel_chat_id,
         message_id=panel_message_id,
         parse_mode="HTML",
-        reply_markup=draft_form_keyboard(
-            message.from_user.id,
-            has_description=bool(draft["payload"].get("description")),
+        reply_markup=(
+            edit_form_keyboard(
+                message.from_user.id,
+                has_description=bool(draft["payload"].get("description")),
+            )
+            if draft.get("draft_kind") == "edit"
+            else draft_form_keyboard(
+                message.from_user.id,
+                has_description=bool(draft["payload"].get("description")),
+            )
         ),
     )
 

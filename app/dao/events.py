@@ -29,6 +29,14 @@ class PublicationStateError(Exception):
     """The event cannot transition from its current publication state."""
 
 
+class EventVersionError(Exception):
+    """The published event changed after an edit draft was opened."""
+
+
+class EventEditPermissionError(Exception):
+    """The administrator level cannot edit this event at this time."""
+
+
 @dataclass(frozen=True)
 class PublicationReservation:
     event_id: int
@@ -65,7 +73,8 @@ async def load_draft(
         await db.execute("BEGIN IMMEDIATE")
         cursor = await db.execute(
             """
-            SELECT d.*, e.status AS target_event_status
+            SELECT d.*, e.status AS target_event_status,
+                   e.starts_at_utc AS target_event_starts_at_utc
             FROM event_drafts d
             LEFT JOIN events e ON e.id=d.target_event_id
             WHERE d.admin_id=?
@@ -143,6 +152,56 @@ async def create_draft(
     return draft
 
 
+async def create_edit_draft(
+    admin_id: int,
+    event_id: int,
+    *,
+    base_version: int,
+    payload: dict[str, Any],
+    menu_chat_id: int,
+    menu_message_id: int,
+    now: int,
+    expires_at: int,
+) -> dict[str, Any]:
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    async with aiosqlite.connect(core_db.DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO event_drafts (
+                admin_id, draft_kind, target_event_id, base_version,
+                payload_json, menu_chat_id, menu_message_id,
+                created_at, updated_at, expires_at
+            ) VALUES (?, 'edit', ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(admin_id) DO UPDATE SET
+                draft_kind='edit',
+                target_event_id=excluded.target_event_id,
+                base_version=excluded.base_version,
+                payload_json=excluded.payload_json,
+                menu_chat_id=excluded.menu_chat_id,
+                menu_message_id=excluded.menu_message_id,
+                created_at=excluded.created_at,
+                updated_at=excluded.updated_at,
+                expires_at=excluded.expires_at
+            """,
+            (
+                admin_id,
+                event_id,
+                base_version,
+                payload_json,
+                menu_chat_id,
+                menu_message_id,
+                now,
+                now,
+                expires_at,
+            ),
+        )
+        await db.commit()
+    draft, _ = await load_draft(admin_id, now=now)
+    if draft is None:
+        raise DraftNotFoundError
+    return draft
+
+
 async def save_draft(
     admin_id: int,
     payload: dict[str, Any],
@@ -206,7 +265,7 @@ async def delete_draft(admin_id: int) -> bool:
         db.row_factory = aiosqlite.Row
         await db.execute("BEGIN IMMEDIATE")
         cursor = await db.execute(
-            "SELECT target_event_id FROM event_drafts WHERE admin_id=?",
+            "SELECT draft_kind, target_event_id FROM event_drafts WHERE admin_id=?",
             (admin_id,),
         )
         draft = await cursor.fetchone()
@@ -214,7 +273,7 @@ async def delete_draft(admin_id: int) -> bool:
             await db.commit()
             return False
         event_id = draft["target_event_id"]
-        if event_id is not None:
+        if event_id is not None and draft["draft_kind"] == "create":
             cursor = await db.execute(
                 "SELECT status FROM events WHERE id=?",
                 (event_id,),
@@ -244,25 +303,30 @@ async def cleanup_expired_drafts(*, now: int) -> int:
         await db.execute("BEGIN IMMEDIATE")
         cursor = await db.execute(
             """
-            SELECT d.target_event_id
+            SELECT d.draft_kind, d.target_event_id
             FROM event_drafts d
             LEFT JOIN events e ON e.id=d.target_event_id
             WHERE d.expires_at<=?
-              AND (d.target_event_id IS NULL OR e.status='draft')
+              AND (
+                    d.draft_kind='edit'
+                    OR d.target_event_id IS NULL
+                    OR e.status='draft'
+              )
             """,
             (now,),
         )
         abandoned_event_ids = [
             int(row["target_event_id"])
             for row in await cursor.fetchall()
-            if row["target_event_id"] is not None
+            if row["draft_kind"] == "create" and row["target_event_id"] is not None
         ]
         deleted = await db.execute(
             """
             DELETE FROM event_drafts
             WHERE expires_at<=?
               AND (
-                    target_event_id IS NULL
+                    draft_kind='edit'
+                    OR target_event_id IS NULL
                     OR target_event_id IN (
                         SELECT id FROM events WHERE status='draft'
                     )
@@ -733,6 +797,214 @@ async def list_missing_events(limit: int = 10) -> list[dict[str, Any]]:
             (limit,),
         )
         return [dict(row) for row in await cursor.fetchall()]
+
+
+async def list_editable_events(
+    *,
+    now: int,
+    include_started: bool,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    time_filter = "" if include_started else " AND starts_at_utc>?"
+    params: tuple[int, ...] = (limit,) if include_started else (now, limit)
+    async with aiosqlite.connect(core_db.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT id, title, starts_at_utc, status, version
+            FROM events
+            WHERE status IN (
+                'published', 'registration_closed', 'started', 'awaiting_review'
+            ){time_filter}
+            ORDER BY starts_at_utc ASC, id ASC
+            LIMIT ?
+            """,
+            params,
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+
+async def apply_edit_draft(
+    admin_id: int,
+    *,
+    admin_level: int,
+    title: str,
+    event_type: str,
+    description: str | None,
+    starts_at_utc: int,
+    safe_until_utc: int,
+    registration_closes_at_utc: int,
+    now: int,
+) -> dict[str, Any]:
+    """Commit every field in an edit draft and reset responses on reschedule."""
+
+    async with aiosqlite.connect(core_db.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute(
+            """
+            SELECT d.target_event_id, d.base_version, e.*
+            FROM event_drafts d
+            JOIN events e ON e.id=d.target_event_id
+            WHERE d.admin_id=? AND d.draft_kind='edit' AND d.expires_at>?
+            """,
+            (admin_id, now),
+        )
+        event = await cursor.fetchone()
+        if not event:
+            await db.rollback()
+            raise DraftNotFoundError
+        event_id = int(event["target_event_id"])
+        if int(event["version"]) != int(event["base_version"]):
+            await db.rollback()
+            raise EventVersionError
+        status = str(event["status"])
+        if status not in {
+            "published",
+            "registration_closed",
+            "started",
+            "awaiting_review",
+        }:
+            await db.rollback()
+            raise EventEditPermissionError
+        if admin_level < 4 and (
+            now >= int(event["starts_at_utc"])
+            or status not in {"published", "registration_closed"}
+        ):
+            await db.rollback()
+            raise EventEditPermissionError
+
+        rescheduled = starts_at_utc != int(event["starts_at_utc"])
+        respondents: list[dict[str, Any]] = []
+        old_reminder_message_id: int | None = None
+        if rescheduled:
+            cursor = await db.execute(
+                """
+                SELECT er.user_id,
+                       COALESCE(NULLIF(trim(p.game_nickname), ''),
+                                er.telegram_name_snapshot,
+                                NULLIF(trim(p.telegram_full_name), ''),
+                                CAST(er.user_id AS TEXT)) AS display_name
+                FROM event_responses er
+                LEFT JOIN profiles p ON p.user_id=er.user_id
+                WHERE er.event_id=?
+                ORDER BY er.responded_at ASC, er.user_id ASC
+                """,
+                (event_id,),
+            )
+            respondents = [dict(row) for row in await cursor.fetchall()]
+            cursor = await db.execute(
+                """
+                SELECT telegram_message_id
+                FROM event_notifications
+                WHERE event_id=? AND kind='auto_reminder' AND status='sent'
+                  AND telegram_message_id IS NOT NULL
+                ORDER BY sent_at DESC, id DESC
+                LIMIT 1
+                """,
+                (event_id,),
+            )
+            reminder = await cursor.fetchone()
+            if reminder:
+                old_reminder_message_id = int(reminder["telegram_message_id"])
+
+        old_value = {
+            "title": event["title"],
+            "event_type": event["event_type"],
+            "description": event["description"],
+            "starts_at_utc": event["starts_at_utc"],
+        }
+        new_value = {
+            "title": title,
+            "event_type": event_type,
+            "description": description,
+            "starts_at_utc": starts_at_utc,
+        }
+        next_status = "published" if rescheduled else status
+        try:
+            updated = await db.execute(
+                """
+                UPDATE events
+                SET title=?, event_type=?, description=?, starts_at_utc=?,
+                    safe_until_utc=?, registration_closes_at_utc=?, status=?,
+                    updated_at=?, version=version+1
+                WHERE id=? AND version=?
+                """,
+                (
+                    title,
+                    event_type,
+                    description,
+                    starts_at_utc,
+                    safe_until_utc,
+                    registration_closes_at_utc,
+                    next_status,
+                    now,
+                    event_id,
+                    event["base_version"],
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            await db.rollback()
+            conflict = await find_start_conflict(
+                starts_at_utc,
+                exclude_event_id=event_id,
+            )
+            if conflict:
+                raise EventConflictError(str(conflict["title"])) from exc
+            raise
+        if updated.rowcount == 0:
+            await db.rollback()
+            raise EventVersionError
+
+        if rescheduled:
+            await db.execute(
+                """
+                UPDATE event_notifications
+                SET dedupe_key=dedupe_key || ':stale:' || id || ':' || ?,
+                    status=CASE WHEN status='sent' THEN status ELSE 'skipped' END,
+                    skipped_at=CASE WHEN status='sent' THEN skipped_at ELSE ? END,
+                    error=CASE
+                        WHEN status='sent' THEN error
+                        ELSE 'event rescheduled'
+                    END
+                WHERE event_id=? AND kind='auto_reminder'
+                """,
+                (now, now, event_id),
+            )
+            await db.execute("DELETE FROM event_results WHERE event_id=?", (event_id,))
+            await db.execute(
+                "DELETE FROM event_late_confirmations WHERE event_id=?",
+                (event_id,),
+            )
+            await db.execute("DELETE FROM event_responses WHERE event_id=?", (event_id,))
+        await db.execute(
+            """
+            INSERT INTO event_audit_log (
+                event_id, actor_id, action, old_value_json,
+                new_value_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                admin_id,
+                "event_rescheduled" if rescheduled else "event_edited",
+                json.dumps(old_value, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(new_value, ensure_ascii=False, separators=(",", ":")),
+                now,
+            ),
+        )
+        await db.execute("DELETE FROM event_drafts WHERE admin_id=?", (admin_id,))
+        await db.commit()
+        return {
+            "event_id": event_id,
+            "title": title,
+            "rescheduled": rescheduled,
+            "respondents": respondents,
+            "starts_at_utc": starts_at_utc,
+            "registration_closes_at_utc": registration_closes_at_utc,
+            "old_reminder_message_id": old_reminder_message_id,
+            "version": int(event["base_version"]) + 1,
+        }
 
 
 async def reserve_republication(

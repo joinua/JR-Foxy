@@ -46,7 +46,12 @@ def render_admin_menu(counts: dict[str, int], notice: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def render_draft_form(payload: dict[str, Any], notice: str | None = None) -> str:
+def render_draft_form(
+    payload: dict[str, Any],
+    notice: str | None = None,
+    *,
+    edit: bool = False,
+) -> str:
     event_type = EVENT_TYPE_LABELS.get(str(payload.get("event_type") or ""))
     raw_date = payload.get("date")
     try:
@@ -54,7 +59,7 @@ def render_draft_form(payload: dict[str, Any], notice: str | None = None) -> str
     except (TypeError, ValueError):
         displayed_date = "⚠️ не вибрана"
     lines = [
-        "📝 <b>Створення події</b>",
+        "📝 <b>Редагування події</b>" if edit else "📝 <b>Створення події</b>",
         "",
         f"Назва: {escape(str(payload.get('title') or '⚠️ не вказана'))}",
         f"Тип: {event_type or '⚠️ не вибрано'}",
@@ -99,6 +104,16 @@ def render_calendar_title(selected_month: date) -> str:
 
 def render_public_card(event: dict[str, Any], *, preview: bool = False) -> str:
     title = escape(str(event["title"]))
+    status = str(event.get("status") or "published")
+    if status == "cancelled":
+        return "\n".join(
+            (
+                f'❌ <b>Подію «{title}» скасовано</b>',
+                "",
+                f"Дата та час: {format_ua_datetime(int(event['starts_at_utc']))}",
+                f"Причина: {escape(str(event.get('cancel_reason') or 'не вказана'))}",
+            )
+        )
     event_type = EVENT_TYPE_LABELS.get(str(event["event_type"]), "невідомий")
     description = str(event.get("description") or "").strip()
     participants = event.get("participants") or []
@@ -112,6 +127,10 @@ def render_public_card(event: dict[str, Any], *, preview: bool = False) -> str:
     ]
     if description:
         lines.append(f"Опис: {escape(description)}")
+    if status == "registration_closed":
+        lines.append("Статус: реєстрацію завершено")
+    elif status in {"started", "awaiting_review"}:
+        lines.append("Статус: подія розпочалася")
     lines.extend(
         [
             "Крайній безпечний термін реєстрації до: "

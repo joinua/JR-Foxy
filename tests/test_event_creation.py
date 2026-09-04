@@ -24,6 +24,7 @@ from app.dao import events as events_dao
 from app.handlers.events import admin as event_admin
 from app.handlers.events.keyboards import calendar_keyboard
 from app.handlers.events.keyboards import public_event_keyboard
+from app.handlers.events.keyboards import reminder_audience_keyboard
 from app.services import event_service
 from app.services.event_render import render_public_card
 
@@ -287,6 +288,24 @@ class EventCreationTests(unittest.IsolatedAsyncioTestCase):
         card = await events_dao.get_event_card(result.event_id)
         self.assertEqual(card["status"], "published")
         self.assertEqual(card["publication"]["message_id"], 321)
+        async with aiosqlite.connect(self.db_path) as connection:
+            cursor = await connection.execute(
+                """
+                SELECT task_type FROM scheduled_tasks
+                WHERE user_id=? AND status='pending'
+                ORDER BY run_at, task_type
+                """,
+                (result.event_id,),
+            )
+            task_types = {row[0] for row in await cursor.fetchall()}
+        self.assertEqual(
+            task_types,
+            {
+                "event_auto_reminder",
+                "event_registration_close",
+                "event_start",
+            },
+        )
 
     async def test_unknown_delivery_is_never_automatically_retried(self):
         await self._complete_draft()
@@ -609,6 +628,17 @@ class EventCreationHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     def test_calendar_callback_data_fits_telegram_limit(self):
         keyboard = calendar_keyboard(9_999_999_999, 2030, 12)
+        callbacks = [
+            button.callback_data
+            for row in keyboard.inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        self.assertTrue(callbacks)
+        self.assertLessEqual(max(len(value.encode("utf-8")) for value in callbacks), 64)
+
+    def test_reminder_callback_data_fits_telegram_limit(self):
+        keyboard = reminder_audience_keyboard(9_999_999_999, 9_999_999_999)
         callbacks = [
             button.callback_data
             for row in keyboard.inline_keyboard

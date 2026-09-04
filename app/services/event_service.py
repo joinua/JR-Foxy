@@ -6,6 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from html import escape
 from typing import Any, Callable
 
 from aiogram import Bot
@@ -17,6 +18,7 @@ from app.core.dates import (
     combine_kyiv_datetime,
     format_ua_datetime,
     parse_user_time,
+    to_kyiv_datetime,
     to_utc_timestamp,
 )
 from app.core.event_types import (
@@ -32,6 +34,18 @@ from app.services.event_render import render_public_card
 
 
 logger = logging.getLogger(__name__)
+
+
+def _public_markup(card: dict[str, Any], factory):
+    if card.get("status") in {
+        EventStatus.STARTED.value,
+        EventStatus.AWAITING_REVIEW.value,
+        EventStatus.COMPLETED.value,
+        EventStatus.CANCELLED.value,
+        EventStatus.ANNULLED.value,
+    }:
+        return None
+    return factory(int(card["id"]))
 
 
 class EventValidationError(Exception):
@@ -122,7 +136,15 @@ async def save_draft_field(
     if draft is None:
         raise events_dao.DraftNotFoundError("expired" if expired else "missing")
     target_status = draft.get("target_event_status")
-    if target_status and target_status != EventStatus.DRAFT.value:
+    if draft.get("draft_kind") == "create":
+        if target_status and target_status != EventStatus.DRAFT.value:
+            raise events_dao.PublicationStateError
+    elif target_status not in {
+        EventStatus.PUBLISHED.value,
+        EventStatus.REGISTRATION_CLOSED.value,
+        EventStatus.STARTED.value,
+        EventStatus.AWAITING_REVIEW.value,
+    }:
         raise events_dao.PublicationStateError
     payload = dict(draft["payload"])
 
@@ -232,7 +254,9 @@ async def validate_draft(
     starts_at = to_utc_timestamp(starts_local)
     earliest = current + EVENT_MIN_CREATION_LEAD_SECONDS
     earliest = ((earliest + 59) // 60) * 60
-    if starts_at < earliest:
+    original_start = draft.get("target_event_starts_at_utc")
+    start_changed = original_start is None or starts_at != int(original_start)
+    if start_changed and starts_at < earliest:
         earliest_dt = datetime.fromtimestamp(earliest, tz=timezone.utc)
         raise EventValidationError(
             "lead_time",
@@ -281,6 +305,155 @@ def preview_event(validated: ValidatedDraft) -> dict[str, Any]:
         "thinking_count": 0,
         "declined_count": 0,
     }
+
+
+async def create_edit_draft(
+    admin_id: int,
+    event_id: int,
+    *,
+    admin_level: int,
+    menu_chat_id: int,
+    menu_message_id: int,
+    now: int | None = None,
+) -> dict[str, Any]:
+    current = now_timestamp() if now is None else now
+    card = await events_dao.get_event_card(event_id)
+    if not card or card["status"] not in {
+        EventStatus.PUBLISHED.value,
+        EventStatus.REGISTRATION_CLOSED.value,
+        EventStatus.STARTED.value,
+        EventStatus.AWAITING_REVIEW.value,
+    }:
+        raise events_dao.EventEditPermissionError
+    if admin_level < 4 and current >= int(card["starts_at_utc"]):
+        raise events_dao.EventEditPermissionError
+    starts = to_kyiv_datetime(
+        datetime.fromtimestamp(int(card["starts_at_utc"]), tz=timezone.utc)
+    )
+    payload = {
+        "title": str(card["title"]),
+        "event_type": str(card["event_type"]),
+        "date": starts.date().isoformat(),
+        "time": starts.strftime("%H:%M"),
+    }
+    if card.get("description"):
+        payload["description"] = str(card["description"])
+    return await events_dao.create_edit_draft(
+        admin_id,
+        event_id,
+        base_version=int(card["version"]),
+        payload=payload,
+        menu_chat_id=menu_chat_id,
+        menu_message_id=menu_message_id,
+        now=current,
+        expires_at=_draft_expiry(current),
+    )
+
+
+async def apply_edit_draft(
+    bot: Bot,
+    admin_id: int,
+    *,
+    admin_level: int,
+    reply_markup_factory: Callable[[int], InlineKeyboardMarkup],
+    now: int | None = None,
+) -> dict[str, Any]:
+    current = now_timestamp() if now is None else now
+    draft, expired = await events_dao.load_draft(admin_id, now=current)
+    if not draft or draft.get("draft_kind") != "edit":
+        raise events_dao.DraftNotFoundError("expired" if expired else "missing")
+    validated = await validate_draft(draft, now=current)
+    try:
+        result = await events_dao.apply_edit_draft(
+            admin_id,
+            admin_level=admin_level,
+            title=validated.title,
+            event_type=validated.event_type,
+            description=validated.description,
+            starts_at_utc=validated.starts_at_utc,
+            safe_until_utc=validated.safe_until_utc,
+            registration_closes_at_utc=validated.registration_closes_at_utc,
+            now=current,
+        )
+    except events_dao.EventConflictError as exc:
+        raise EventValidationError(
+            "conflict",
+            f'На цей час уже заплановано подію «{exc.title}». Виберіть інший час.',
+        ) from exc
+
+    if result["rescheduled"]:
+        from app.core.db import cancel_pending_tasks
+        from app.services.event_jobs import (
+            EVENT_AUTO_REMINDER_TASK,
+            EVENT_REGISTRATION_CLOSE_TASK,
+            EVENT_START_TASK,
+            schedule_event_jobs,
+        )
+
+        try:
+            for task_type in (
+                EVENT_AUTO_REMINDER_TASK,
+                EVENT_REGISTRATION_CLOSE_TASK,
+                EVENT_START_TASK,
+            ):
+                await cancel_pending_tasks(task_type, user_id=result["event_id"])
+            await schedule_event_jobs(
+                result["event_id"],
+                starts_at_utc=result["starts_at_utc"],
+                registration_closes_at_utc=result["registration_closes_at_utc"],
+                version=result["version"],
+                now=current,
+            )
+        except Exception:
+            logger.exception(
+                "event jobs will require startup reconciliation",
+                extra={"event_id": result["event_id"]},
+            )
+
+        old_reminder_id = result.get("old_reminder_message_id")
+        if old_reminder_id:
+            try:
+                await bot.edit_message_text(
+                    "⚠️ Це нагадування більше не актуальне: дату або час події змінено.",
+                    chat_id=MAIN_CHAT_ID,
+                    message_id=int(old_reminder_id),
+                )
+            except (TelegramBadRequest, TelegramForbiddenError):
+                logger.info(
+                    "old event reminder could not be marked stale",
+                    extra={"event_id": result["event_id"]},
+                )
+
+    await refresh_event_card(
+        bot,
+        result["event_id"],
+        reply_markup_factory=reply_markup_factory,
+    )
+    if result["rescheduled"] and result["respondents"]:
+        card = await events_dao.get_event_card(result["event_id"])
+        publication = card.get("publication") if card else None
+        if publication and publication.get("message_id"):
+            mentions = "\n".join(
+                f'<a href="tg://user?id={int(row["user_id"])}">'
+                f'{escape(str(row["display_name"]))}</a>'
+                for row in result["respondents"]
+            )
+            try:
+                await bot.send_message(
+                    int(publication["chat_id"]),
+                    f'📅 Дату або час події «{escape(result["title"])}» змінено. '
+                    "Попередні відповіді скинуто. Підтвердьте участь повторно:\n\n"
+                    f"{mentions}",
+                    parse_mode="HTML",
+                    reply_to_message_id=int(publication["message_id"]),
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                logger.exception(
+                    "event reschedule notice failed",
+                    extra={"event_id": result["event_id"]},
+                )
+    return result
 
 
 async def publish_draft(
@@ -362,6 +535,20 @@ async def publish_draft(
         sent.message_id,
         now=now_timestamp(),
     )
+    from app.services.event_jobs import schedule_event_jobs
+
+    try:
+        await schedule_event_jobs(
+            reservation.event_id,
+            starts_at_utc=validated.starts_at_utc,
+            registration_closes_at_utc=validated.registration_closes_at_utc,
+            version=int(card["version"]),
+        )
+    except Exception:
+        logger.exception(
+            "published event jobs will require startup reconciliation",
+            extra={"event_id": reservation.event_id},
+        )
     return PublicationResult(
         event_id=reservation.event_id,
         status=EventStatus.PUBLISHED.value,
@@ -371,7 +558,11 @@ async def publish_draft(
 
 async def reconcile_startup(*, now: int | None = None) -> int:
     current = now_timestamp() if now is None else now
-    return await events_dao.reconcile_incomplete_publications(now=current)
+    reconciled = await events_dao.reconcile_incomplete_publications(now=current)
+    from app.services.event_jobs import rebuild_event_jobs
+
+    await rebuild_event_jobs(now=current)
+    return reconciled
 
 
 def _message_is_missing(exc: TelegramBadRequest) -> bool:
@@ -405,7 +596,7 @@ async def refresh_public_cards(
                 chat_id=int(publication["chat_id"]),
                 message_id=int(publication["message_id"]),
                 parse_mode="HTML",
-                reply_markup=reply_markup_factory(event_id),
+                reply_markup=_public_markup(card, reply_markup_factory),
                 disable_web_page_preview=True,
             )
         except TelegramBadRequest as exc:
@@ -427,6 +618,47 @@ async def refresh_public_cards(
                 extra={"event_id": event_id, "error": str(exc)},
             )
     return missing
+
+
+async def refresh_event_card(
+    bot: Bot,
+    event_id: int,
+    *,
+    reply_markup_factory: Callable[[int], InlineKeyboardMarkup],
+) -> bool:
+    """Refresh one committed event card and detect a deleted publication."""
+
+    card = await events_dao.get_event_card(event_id)
+    if not card or not card.get("publication"):
+        return False
+    publication = card["publication"]
+    try:
+        await bot.edit_message_text(
+            render_public_card(card),
+            chat_id=int(publication["chat_id"]),
+            message_id=int(publication["message_id"]),
+            parse_mode="HTML",
+            reply_markup=_public_markup(card, reply_markup_factory),
+            disable_web_page_preview=True,
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).casefold():
+            return True
+        if _message_is_missing(exc):
+            await events_dao.mark_publication_missing(event_id, now=now_timestamp())
+        else:
+            logger.warning(
+                "event card refresh failed",
+                extra={"event_id": event_id, "error": str(exc)},
+            )
+        return False
+    except TelegramForbiddenError as exc:
+        logger.warning(
+            "event card refresh forbidden",
+            extra={"event_id": event_id, "error": str(exc)},
+        )
+        return False
+    return True
 
 
 async def republish_event(
