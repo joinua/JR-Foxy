@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.services import profile_service
+from app.services import reliability_service
 from app.handlers.profile.utils import (
     html_user_mention,
     render_profile,
@@ -60,4 +61,5 @@ async def profile_handler(message: Message) -> None:
             return
 
     profile = await profile_service.fill_missing_join_date(profile["user_id"]) or profile
-    await message.answer(render_profile(profile), parse_mode="HTML")
+    reliability = await reliability_service.get_summary(int(profile["user_id"]))
+    await message.answer(render_profile(profile, reliability), parse_mode="HTML")

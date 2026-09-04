@@ -20,6 +20,7 @@ from app.handlers.profile.admin_commands import (
 from app.handlers.profile.profile import PROFILE_NOT_FOUND
 from app.handlers.profile.utils import parse_user_date, render_profile
 from app.services import profile_service
+from app.services import reliability_service
 from app.services.birthday_reminders import (
     claim_birthday_pre_notification,
     complete_birthday_notification,
@@ -193,7 +194,11 @@ async def profile_admin_callback(callback: CallbackQuery, state: FSMContext) -> 
     elif action in {"refresh", "show"}:
         if action == "show":
             profile = await profile_service.fill_missing_join_date(target_id) or await profile_service.get_profile(target_id)
-            await callback.message.answer(render_profile(profile), parse_mode="HTML")
+            reliability = await reliability_service.get_summary(target_id)
+            await callback.message.answer(
+                render_profile(profile, reliability),
+                parse_mode="HTML",
+            )
         await _refresh_panel(callback.message, admin_id, target_id)
     elif action == "nick":
         await state.set_state(ProfileAdminEdit.nickname)
