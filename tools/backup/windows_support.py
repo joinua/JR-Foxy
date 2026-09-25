@@ -1,6 +1,5 @@
 """Windows-only filesystem protection, locking, and notification helpers."""
 import contextlib
-import base64
 import ctypes
 from ctypes import wintypes
 import json
@@ -33,25 +32,102 @@ def require_acl_volume(path):
         raise BackupError('ACL', 'The backup drive does not support access control lists')
 
 
-def protect(path, current_sid=None):
+def acl_principals(path):
+    """Read ordinary allow ACEs using documented Windows APIs, without a shell.
+
+    Reject null DACLs, deny/object/callback ACEs, and invalid SIDs rather than
+    incorrectly treating an unfamiliar access policy as a private directory.
+    Buffers returned by Windows are released using LocalFree.
+    """
+    pointer = ctypes.c_void_p
+    pointer_ref = ctypes.POINTER(pointer)
+    dword = ctypes.c_uint32
+    advapi = ctypes.WinDLL('advapi32', use_last_error=True)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    advapi.GetNamedSecurityInfoW.argtypes = [ctypes.c_wchar_p, ctypes.c_int, dword,
+                                           pointer_ref, pointer_ref, pointer_ref,
+                                           pointer_ref, pointer_ref]
+    advapi.GetNamedSecurityInfoW.restype = dword
+    advapi.GetAclInformation.argtypes = [pointer, pointer, dword, ctypes.c_int]
+    advapi.GetAclInformation.restype = ctypes.c_int
+    advapi.GetAce.argtypes = [pointer, dword, pointer_ref]
+    advapi.GetAce.restype = ctypes.c_int
+    advapi.IsValidSid.argtypes = [pointer]
+    advapi.IsValidSid.restype = ctypes.c_int
+    advapi.GetLengthSid.argtypes = [pointer]
+    advapi.GetLengthSid.restype = dword
+    advapi.ConvertSidToStringSidW.argtypes = [pointer, pointer_ref]
+    advapi.ConvertSidToStringSidW.restype = ctypes.c_int
+    kernel.LocalFree.argtypes = [pointer]
+    kernel.LocalFree.restype = pointer
+
+    class AclSize(ctypes.Structure):
+        _fields_ = [('count', dword), ('used', dword), ('free', dword)]
+
+    class AceHeader(ctypes.Structure):
+        _fields_ = [('type', ctypes.c_ubyte), ('flags', ctypes.c_ubyte),
+                    ('size', ctypes.c_uint16)]
+
+    def failed(message):
+        return BackupError('ACL', f'{message}: {path}')
+
+    descriptor, dacl = pointer(), pointer()
+    result = advapi.GetNamedSecurityInfoW(str(path), 1, 4, None, None,
+                                         ctypes.byref(dacl), None, ctypes.byref(descriptor))
+    if result:
+        raise failed(f'Cannot read access permissions (Windows error {result})')
+    try:
+        if not dacl.value:
+            raise failed('Unrestricted or missing access permissions')
+        size = AclSize()
+        if not advapi.GetAclInformation(dacl, ctypes.byref(size), ctypes.sizeof(size), 2):
+            raise failed('Cannot inspect access entries')
+        principals = []
+        for index in range(size.count):
+            entry = pointer()
+            if not advapi.GetAce(dacl, index, ctypes.byref(entry)) or not entry.value:
+                raise failed('Cannot read an access entry')
+            header = AceHeader.from_address(entry.value)
+            if header.type != 0 or header.size < 16:  # ACCESS_ALLOWED_ACE_TYPE
+                raise failed('Unsupported or deny access entry; manual review required')
+            principal = pointer(entry.value + 8)  # ACE_HEADER + ACCESS_MASK
+            if (not advapi.IsValidSid(principal) or
+                    advapi.GetLengthSid(principal) > header.size - 8):
+                raise failed('Invalid account identifier in access permissions')
+            sid_string = pointer()
+            if not advapi.ConvertSidToStringSidW(principal, ctypes.byref(sid_string)):
+                raise failed('Cannot read an account identifier')
+            try:
+                principals.append(ctypes.wstring_at(sid_string.value))
+            finally:
+                kernel.LocalFree(sid_string)
+        return principals
+    finally:
+        kernel.LocalFree(descriptor)
+
+
+def protect(path, current_sid=None, *, remove_administrators=False):
     current_sid = current_sid or sid()
     path = Path(path)
+    # OpenSSH may create this key with an explicit built-in Administrators grant.
+    # Only the dedicated backup key may have that known grant removed. Other
+    # files/directories and all unexpected accounts still require manual review.
+    if remove_administrators and (path.name != 'backup_ssh_ed25519' or not path.is_file()):
+        raise BackupError('ACL', 'Administrators removal is restricted to the backup SSH key')
     require_acl_volume(path)
     rights = '(OI)(CI)F' if path.is_dir() else 'F'
     subprocess.run(['icacls.exe', str(path), '/inheritance:r', '/grant:r',
                     '*'+current_sid+':'+rights, '*S-1-5-18:'+rights],
                    check=True, capture_output=True, timeout=20, creationflags=0x08000000)
-    # Validate explicit entries too: inherited-only removal must not leave a
-    # pre-existing grant for another account on a reused directory.
-    literal = "'"+str(path).replace("'", "''")+"'"
-    script = "$a=Get-Acl -LiteralPath "+literal+"; @($a.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }) | ConvertTo-Json -Compress"
-    encoded=base64.b64encode(script.encode('utf-16le')).decode('ascii')
-    result = subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-EncodedCommand',encoded],
-                            check=True, capture_output=True, timeout=20, creationflags=0x08000000)
-    entries = json.loads(result.stdout.decode('utf-8-sig'))
-    entries = [entries] if isinstance(entries,str) else (entries or [])
-    if set(entries) != {current_sid, 'S-1-5-18'}:
-        raise BackupError('ACL', 'The backup folder has explicit access for another account')
+    if remove_administrators:
+        subprocess.run(['icacls.exe', str(path), '/remove:g', '*S-1-5-32-544'],
+                       check=True, capture_output=True, timeout=20, creationflags=0x08000000)
+    entries = set(acl_principals(path))
+    required = {current_sid, 'S-1-5-18'}
+    if entries != required:
+        extra = ', '.join(sorted(entries - required)) or 'none'
+        missing = ', '.join(sorted(required - entries)) or 'none'
+        raise BackupError('ACL', f'Unexpected permissions on {path}; extra SIDs: {extra}; missing SIDs: {missing}')
 
 
 @contextlib.contextmanager

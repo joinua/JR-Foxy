@@ -54,7 +54,7 @@ def install(args):
         ssh_key=keys/'backup_ssh_ed25519'
         if not ssh_key.exists():
             execute([bins['ssh-keygen'],'-t','ed25519','-N','','-C','JR-Foxy Backup','-f',str(ssh_key)],timeout=30)
-        protect(ssh_key,owner)
+        protect(ssh_key,owner,remove_administrators=True)
         public=execute([bins['ssh-keygen'],'-y','-P','','-f',str(ssh_key)],capture_output=True,timeout=15).stdout.decode('ascii').strip()
         if not public.startswith('ssh-ed25519 '):
             raise BackupError('KEY','The existing backup SSH key has an unsupported type')
