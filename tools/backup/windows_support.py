@@ -160,6 +160,12 @@ def toast(tools, keys, title, body):
     try:
         with os.fdopen(fd,'w',encoding='utf-8') as stream:
             json.dump({'title':title,'body':body},stream,ensure_ascii=False)
-        powershell(tools/'Notify.ps1', temporary)
+        try:
+            powershell(tools/'Notify.ps1', temporary)
+        except subprocess.CalledProcessError as exc:
+            # Log only a fixed stage/permission code, never custom message text.
+            match = re.search(rb'(?m)^NOTIFY_ERROR=([A-Za-z]{1,40})\r?$', exc.stdout or b'')
+            reason = match.group(1).decode('ascii') if match else 'PowerShellFailed'
+            raise BackupError('NOTIFICATION', reason) from None
     finally:
         Path(temporary).unlink(missing_ok=True)

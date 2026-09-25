@@ -104,7 +104,10 @@ class Client:
             toast(TOOLS,self.keys,title[:200],body[:3000])
             atomic_json(notice_path,{'code':code,'at':now().timestamp()})
         except Exception as exc:
-            self.log('notification_failed',error_type=type(exc).__name__)
+            details = {'error_type':type(exc).__name__}
+            if isinstance(exc, BackupError) and exc.code == 'NOTIFICATION':
+                details['reason'] = str(exc)
+            self.log('notification_failed',**details)
 
     def ssh(self, command, output=None):
         cfg=self.config
