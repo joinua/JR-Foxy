@@ -36,7 +36,52 @@ try {
     $Stage = 'SettingRead'
     $SettingProperty = $NotifierType.GetProperty('Setting')
     if ($null -eq $SettingProperty) { throw 'ToastNotifier metadata has no Setting property.' }
-    $Setting = $SettingProperty.GetValue($Notifier, $null)
+    $Show = $NotifierType.GetMethod('Show', [type[]]@([Windows.UI.Notifications.ToastNotification]))
+    try {
+        $Setting = $SettingProperty.GetValue($Notifier, $null)
+    } catch {
+        # Unpackaged apps may have no WPN record before their first Show().
+        # Windows Community Toolkit uses the same suppressed, short-lived
+        # notification to establish that record before reading Setting.
+        # Only ERROR_NOT_FOUND is eligible; other failures are not suppressed.
+        if ($_.Exception.GetBaseException().HResult -ne -2147023728) { throw }
+        $Stage = 'Bootstrap'
+        $ProbeXml = New-Object Windows.Data.Xml.Dom.XmlDocument
+        $ProbeXml.LoadXml("<toast><visual><binding template='ToastGeneric'><text>JR-Foxy notification setup</text></binding></visual><audio silent='true'/></toast>")
+        $Probe = [Windows.UI.Notifications.ToastNotification]::new($ProbeXml)
+        $Probe.SuppressPopup = $true
+        $Probe.Tag = 'jrfoxyInit'
+        $Probe.Group = 'jrfoxySetup'
+        $Probe.ExpirationTime = [DateTimeOffset]::Now.AddSeconds(15)
+        try {
+            $Show.Invoke($Notifier, [object[]]@($Probe)) | Out-Null
+            Write-Output 'NOTIFICATION_BOOTSTRAP_SUBMITTED'
+            $Setting = $null
+            foreach ($DelayMs in @(0, 200, 500, 1000)) {
+                if ($DelayMs -gt 0) { Start-Sleep -Milliseconds $DelayMs }
+                try {
+                    $Setting = $SettingProperty.GetValue($Notifier, $null)
+                    break
+                } catch {
+                    if ($_.Exception.GetBaseException().HResult -ne -2147023728) { throw }
+                }
+            }
+            if ($null -eq $Setting) {
+                throw 'Windows still has no notification record after initialization (0x80070490).'
+            }
+        } finally {
+            # Remove only our setup notification. Never clear other history.
+            try {
+                $HistoryType = [Windows.UI.Notifications.ToastNotificationHistory, Windows.UI.Notifications, ContentType=WindowsRuntime]
+                $History = $ManagerType.GetProperty('History').GetValue($null, $null)
+                $Remove = $HistoryType.GetMethod('Remove', [type[]]@([string], [string], [string]))
+                $Remove.Invoke($History, [object[]]@('jrfoxyInit', 'jrfoxySetup', $AppId)) | Out-Null
+            } catch {
+                Write-Output 'NOTIFICATION_BOOTSTRAP_CLEANUP_PENDING: expires after 15 seconds.'
+            }
+        }
+        $Stage = 'SettingRead'
+    }
     if ($null -eq $Setting) { throw 'Windows notification setting could not be read.' }
     $SettingCode = [int]$Setting
     $SettingNames = @('Enabled', 'DisabledForApplication', 'DisabledForUser', 'DisabledByGroupPolicy', 'DisabledByManifest')
@@ -64,7 +109,6 @@ try {
     $Toast = [Windows.UI.Notifications.ToastNotification]::new($Xml)
     $Toast.ExpirationTime = [DateTimeOffset]::Now.AddHours(1)
     $Stage = 'Show'
-    $Show = $NotifierType.GetMethod('Show', [type[]]@([Windows.UI.Notifications.ToastNotification]))
     $Show.Invoke($Notifier, [object[]]@($Toast)) | Out-Null
     # Show() returning is submission, not proof of visual delivery.
     Write-Output 'TOAST_SUBMITTED'

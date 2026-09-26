@@ -12,9 +12,12 @@ from windows_support import powershell, single_instance
 
 PACKAGE = Path(__file__).resolve().parent
 PREVIOUS = {
-    'Notify.ps1': 'fb9badb9ff2b459a7052d79aaa0654313c15426e922d807fce2a31872a373c24',
-    'windows_support.py': 'f57e0f7c608f90a2bb35151fb59f479e1beaa2b4a1c14ccb391810087bc0f23a',
-    'client.py': 'cad735dfc8886dff67ed41c532335815530937ce570e432f173a5ee8b1c6dba6',
+    'Notify.ps1': {
+        'fb9badb9ff2b459a7052d79aaa0654313c15426e922d807fce2a31872a373c24',
+        '495b055ec89a6da27b6bc6602f9af51aeb301b8e01b311aa6c8697e018ee366e',
+    },
+    'windows_support.py': {'f57e0f7c608f90a2bb35151fb59f479e1beaa2b4a1c14ccb391810087bc0f23a'},
+    'client.py': {'cad735dfc8886dff67ed41c532335815530937ce570e432f173a5ee8b1c6dba6'},
 }
 
 
@@ -40,14 +43,15 @@ def repair(folder):
     keys = Path(config['private_key']).parent
     with single_instance(keys / 'installer.lock'), single_instance(keys / 'client.lock'):
         changes = []
-        for name, previous_hash in PREVIOUS.items():
+        for name, previous_hashes in PREVIOUS.items():
             target = folder / name
             before, after = target.read_bytes(), (PACKAGE / name).read_bytes()
             if before == after:
                 continue
-            if hashlib.sha256(before).hexdigest() != previous_hash:
+            before_hash = hashlib.sha256(before).hexdigest()
+            if before_hash not in previous_hashes:
                 raise BackupError('VERSION', f'{name} has other changes; automatic replacement refused.')
-            saved = folder / (name + '.before-notification-fix')
+            saved = folder / (name + '.before-notification-fix-' + before_hash[:12])
             if saved.exists() and saved.read_bytes() != before:
                 raise BackupError('VERSION', f'An earlier saved version of {name} differs; stopped.')
             changes.append((target, saved, before, after))
