@@ -9,3 +9,15 @@ data/jrfoxy.db
 data/*.db
 data/
 *.db
+
+# Local backups, generated setup files and private backup keys
+/Backup/
+/BackupTools/
+/BackupSetup/
+/JR-Foxy_BackupSetup_*.zip
+/jr_foxy_first_backup.py
+/jr_foxy_verify_backup.py
+*.zip.age
+*.zip.age.part
+*.agekey
+backup_ssh_ed25519*
