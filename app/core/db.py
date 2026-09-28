@@ -274,6 +274,9 @@ async def init_db() -> None:
         await _ensure_candidates_schema(db)
         await _ensure_birthday_schema(db)
         await _ensure_scheduled_tasks_schema(db)
+        from app.dao.tiktok import ensure_schema as ensure_tiktok_schema
+
+        await ensure_tiktok_schema(db)
         await ensure_event_schema(db)
         await db.commit()
 
@@ -972,6 +975,34 @@ async def schedule_task(
             task_id = int(cur.lastrowid)
         await db.commit()
         return task_id
+
+
+async def ensure_periodic_task(
+    task_type: str, run_at: int, *, include_running: bool = True
+) -> int:
+    """Keep an existing due time, or atomically repair a missing periodic job."""
+    now = int(time.time())
+    states = ("pending", "running") if include_running else ("pending",)
+    placeholders = ",".join("?" for _ in states)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cur = await db.execute(
+            f"SELECT id FROM scheduled_tasks WHERE task_type=? "
+            f"AND status IN ({placeholders}) ORDER BY run_at, id LIMIT 1",
+            (task_type, *states),
+        )
+        row = await cur.fetchone()
+        if row:
+            await db.commit()
+            return int(row[0])
+        cur = await db.execute(
+            """INSERT INTO scheduled_tasks
+               (task_type, run_at, status, tries, max_attempts, created_at, updated_at)
+               VALUES (?, ?, 'pending', 0, 4, ?, ?)""",
+            (task_type, run_at, now, now),
+        )
+        await db.commit()
+        return int(cur.lastrowid)
 
 
 async def cancel_pending_tasks(
