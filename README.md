@@ -34,3 +34,7 @@ Required production secrets:
    - `TIKTOK_THREAD_ID` (ID форум-теми, опційно)
 3. Щоб зафіксувати тему через бота: відкрийте потрібну форум-тему та викличте `/tiktok_set_thread`.
    Бот збереже `message_thread_id` у `chat_settings` і надалі поститиме TikTok повідомлення саме туди.
+4. `/tiktok_status` у приваті або адмін-чаті показує результат останньої перевірки та наступну задачу без публікації.
+
+Правила обробки, повторні спроби, міграція та перевірка після оновлення:
+[TikTok notifications](docs/tiktok-notifications.md).

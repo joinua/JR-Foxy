@@ -17,8 +17,7 @@ from app.core.db import (
     mark_task_running,
     recover_stale_running_tasks,
     set_candidate_buttons_message,
-    schedule_task,
-    cancel_pending_tasks,
+    ensure_periodic_task,
 )
 
 from app.services.tiktok_watcher import check_and_notify
@@ -58,17 +57,18 @@ LEFT_RECEPTION_TEXT = "Не дочекавшись свого зіркового
 
 
 async def register_tiktok_task() -> None:
-    """Реєструє або оновлює періодичну задачу перевірки TikTok."""
-
-    await cancel_pending_tasks("tiktok_check")
-    run_at = int(time.time()) + TIKTOK_CHECK_INTERVAL_SECONDS
-    await schedule_task(task_type="tiktok_check", run_at=run_at)
+    """Зберігає чинний розклад; відсутню перевірку запускає одразу."""
+    await ensure_periodic_task("tiktok_check", int(time.time()))
 
 
 async def _handle_tiktok_check(bot: Bot) -> None:
-    await check_and_notify(bot)
-    run_at = int(time.time()) + TIKTOK_CHECK_INTERVAL_SECONDS
-    await schedule_task(task_type="tiktok_check", run_at=run_at)
+    result = await check_and_notify(bot)
+    delay = TIKTOK_CHECK_INTERVAL_SECONDS
+    if result.status in {"feed_error", "telegram_error", "storage_error", "internal_error"}:
+        delay = min(delay, 300)
+    elif result.remaining or result.status == "busy":
+        delay = min(delay, 60)
+    await ensure_periodic_task("tiktok_check", int(time.time()) + delay, include_running=False)
 
 
 def _review_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -117,50 +117,59 @@ async def _handle_invite_review_due(bot: Bot, task: dict) -> None:
 async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
     last_recovery = 0.0
     while True:
-        monotonic_now = asyncio.get_running_loop().time()
-        if monotonic_now - last_recovery >= SCHEDULER_RECOVERY_INTERVAL_SECONDS:
-            recovered = await recover_stale_running_tasks(SCHEDULER_LEASE_SECONDS)
-            if recovered["recovered"] or recovered["failed"]:
-                logger.warning(
-                    "recovered stale scheduler tasks",
-                    extra=recovered,
+        try:
+            monotonic_now = asyncio.get_running_loop().time()
+            if monotonic_now - last_recovery >= SCHEDULER_RECOVERY_INTERVAL_SECONDS:
+                recovered = await recover_stale_running_tasks(SCHEDULER_LEASE_SECONDS)
+                if recovered["recovered"] or recovered["failed"]:
+                    logger.warning(
+                        "recovered stale scheduler tasks",
+                        extra=recovered,
+                    )
+                last_recovery = monotonic_now
+
+                # A periodic job must survive retry exhaustion or legacy missing jobs.
+                await ensure_periodic_task(
+                    "tiktok_check", int(time.time()) + TIKTOK_CHECK_INTERVAL_SECONDS
                 )
-            last_recovery = monotonic_now
 
-        tasks = await fetch_due_tasks(limit=30)
+            tasks = await fetch_due_tasks(limit=30)
 
-        for task in tasks:
-            task_id = int(task["id"])
-            locked = await mark_task_running(task_id)
-            if not locked:
-                continue
+            for task in tasks:
+                task_id = int(task["id"])
+                locked = await mark_task_running(task_id)
+                if not locked:
+                    continue
 
-            try:
-                if task["task_type"] == "invite_review_due":
-                    await _handle_invite_review_due(bot, task)
-                elif task["task_type"] == "tiktok_check":
-                    await _handle_tiktok_check(bot)
-                elif task["task_type"] == BIRTHDAY_DAILY_TASK:
-                    await send_daily_birthday_reminders(bot)
-                elif task["task_type"] == BIRTHDAY_REMIND_TASK:
-                    await send_postponed_birthday_reminder(bot, int(task["payload_json"] or 0))
-                elif task["task_type"] == TALKTOP_DAILY_TASK:
-                    await send_daily_talktop(bot)
-                elif task["task_type"] == EVENT_DRAFT_CLEANUP_TASK:
-                    await run_event_draft_cleanup()
-                elif task["task_type"] == EVENT_AUTO_REMINDER_TASK:
-                    await run_event_auto_reminder(bot, task)
-                elif task["task_type"] == EVENT_REGISTRATION_CLOSE_TASK:
-                    await run_event_registration_close(bot, task)
-                elif task["task_type"] == EVENT_START_TASK:
-                    await run_event_start(bot, task)
-                elif task["task_type"] == EVENT_REVIEW_CREATE_TASK:
-                    await run_event_review_create(bot, task)
-                elif task["task_type"] == EVENT_REVIEW_REMINDER_TASK:
-                    await run_event_review_reminder(bot, task)
-                await mark_task_done(task_id)
-            except Exception as exc:
-                logger.exception("db scheduler task failed", extra={"task_id": task_id})
-                await mark_task_failed(task_id, str(exc))
+                try:
+                    if task["task_type"] == "invite_review_due":
+                        await _handle_invite_review_due(bot, task)
+                    elif task["task_type"] == "tiktok_check":
+                        await _handle_tiktok_check(bot)
+                    elif task["task_type"] == BIRTHDAY_DAILY_TASK:
+                        await send_daily_birthday_reminders(bot)
+                    elif task["task_type"] == BIRTHDAY_REMIND_TASK:
+                        await send_postponed_birthday_reminder(bot, int(task["payload_json"] or 0))
+                    elif task["task_type"] == TALKTOP_DAILY_TASK:
+                        await send_daily_talktop(bot)
+                    elif task["task_type"] == EVENT_DRAFT_CLEANUP_TASK:
+                        await run_event_draft_cleanup()
+                    elif task["task_type"] == EVENT_AUTO_REMINDER_TASK:
+                        await run_event_auto_reminder(bot, task)
+                    elif task["task_type"] == EVENT_REGISTRATION_CLOSE_TASK:
+                        await run_event_registration_close(bot, task)
+                    elif task["task_type"] == EVENT_START_TASK:
+                        await run_event_start(bot, task)
+                    elif task["task_type"] == EVENT_REVIEW_CREATE_TASK:
+                        await run_event_review_create(bot, task)
+                    elif task["task_type"] == EVENT_REVIEW_REMINDER_TASK:
+                        await run_event_review_reminder(bot, task)
+                    await mark_task_done(task_id)
+                except Exception as exc:
+                    logger.exception("db scheduler task failed", extra={"task_id": task_id})
+                    await mark_task_failed(task_id, str(exc))
+        except Exception as exc:
+            # DB failures outside a handler must not kill the background worker.
+            logger.warning("db scheduler iteration failed: %s", type(exc).__name__)
 
         await asyncio.sleep(poll_interval)
