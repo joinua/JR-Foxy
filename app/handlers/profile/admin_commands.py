@@ -21,7 +21,9 @@ from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID
 from app.handlers.profile.profile import PROFILE_NOT_FOUND
 from app.handlers.profile.utils import (
     has_explicit_user_reply,
+    html_user_mention,
     parse_user_date,
+    pluralize,
     resolve_command_user_reference,
 )
 from app.services import profile_service
@@ -222,40 +224,43 @@ async def delete_audit_handler(message: Message) -> None:
 
 
 def _audit_display_name(row: dict) -> str:
-    if row.get("game_nickname"):
-        return escape(str(row["game_nickname"]))
-    username = row.get("telegram_username") or row.get("call_username")
+    # The game nickname may differ from the person's current Telegram identity.
+    username = row.get("call_username") or row.get("telegram_username")
     if username:
-        return f"@{escape(str(username).lstrip('@'))}"
-    full_name = row.get("telegram_full_name") or " ".join(
-        part for part in (row.get("call_first_name"), row.get("call_last_name")) if part
-    ).strip()
-    if full_name:
-        return escape(full_name)
-    return escape(str(row.get("user_id") or "невідомий користувач"))
+        display_name = f"@{str(username).lstrip('@')}"
+    else:
+        display_name = " ".join(
+            part for part in (row.get("call_first_name"), row.get("call_last_name")) if part
+        ).strip() or row.get("telegram_full_name") or str(row["user_id"])
+    return html_user_mention(int(row["user_id"]), str(display_name))
 
 
-def _render_profile_audit(rows: list[dict]) -> str:
-    if not rows:
-        return "Немає незаповнених профілів учасників клану! Гарна робота!"
-
+def _render_profile_audit(
+    rows: list[dict], *, total_members: int, completed_profiles: int
+) -> str:
     number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
     visible_rows = rows[:5]
     lines = ["📋 <b>Аудит профілів клану JokerRecon</b>", "━━━━━━━━━━━━"]
 
-    for index, row in enumerate(visible_rows):
-        lines.extend([f"{number_emojis[index]} {_audit_display_name(row)}", ""])
-        lines.extend(f"❌ {escape(str(field))}" for field in row["missing_fields"])
-        lines.append("━━━━━━━━━━━━")
+    if not rows:
+        lines.append("Серед перевірених профілів незаповнених немає. Гарна робота!")
+    else:
+        for index, row in enumerate(visible_rows):
+            lines.extend([f"{number_emojis[index]} {_audit_display_name(row)}", ""])
+            lines.extend(f"❌ {escape(str(field))}" for field in row["missing_fields"])
+            lines.append("━━━━━━━━━━━━")
 
-    hidden_count = len(rows) - len(visible_rows)
-    if hidden_count > 0:
-        lines.extend(
-            ["", f"Ще потребують контролю: {hidden_count} учасники клану"]
-        )
+        hidden_count = len(rows) - len(visible_rows)
+        if hidden_count > 0:
+            lines.extend(
+                ["", f"Ще потребують контролю: {hidden_count} учасники клану"]
+            )
 
     lines.extend(
         [
+            "",
+            f"Всього в клані: <b>{pluralize(total_members, 'учасник', 'учасники', 'учасників')}</b>",
+            f"Заповнені профілі з них у: <b>{pluralize(completed_profiles, 'учасника', 'учасників', 'учасників')}</b>",
             "",
             (
                 "Прохання Офіцерам клану допомогти учасникам заповнити вище "
@@ -269,7 +274,10 @@ def _render_profile_audit(rows: list[dict]) -> str:
 
 def _is_missing_chat_member_error(exc: TelegramBadRequest) -> bool:
     message = str(exc).lower()
-    return "user not found" in message or "member not found" in message
+    return any(
+        reason in message
+        for reason in ("user not found", "member not found", "user not participant")
+    )
 
 
 def _apply_live_user_to_audit_row(row: dict, user: Any) -> None:
@@ -290,6 +298,8 @@ async def _refresh_profile_audit_rows(rows: list[dict]) -> list[dict]:
         user_id = row.get("user_id")
         if user_id in (None, ""):
             continue
+        if int(user_id) == bot.id:
+            continue
 
         try:
             member = await bot.get_chat_member(MAIN_CHAT_ID, int(user_id))
@@ -302,7 +312,7 @@ async def _refresh_profile_audit_rows(rows: list[dict]) -> list[dict]:
                 user_id,
                 exc,
             )
-            refreshed_rows.append(row)
+            # No verified membership: do not publish a stale database snapshot.
             continue
         except TelegramForbiddenError as exc:
             logger.warning(
@@ -310,12 +320,15 @@ async def _refresh_profile_audit_rows(rows: list[dict]) -> list[dict]:
                 user_id,
                 exc,
             )
-            refreshed_rows.append(row)
             continue
 
         status = getattr(member.status, "value", member.status)
-        if status in {"left", "kicked"}:
+        if status in {"left", "kicked"} or (
+            status == "restricted" and not getattr(member, "is_member", True)
+        ):
             await profile_service.archive_profile(int(user_id))
+            continue
+        if member.user.is_bot:
             continue
 
         _apply_live_user_to_audit_row(row, member.user)
@@ -354,8 +367,17 @@ async def profile_audit_handler(message: Message) -> None:
     status_message = await message.answer(PROFILE_AUDIT_LOADING_TEXT)
     rows = await profile_service.list_profile_audit_candidates()
     rows = await _refresh_profile_audit_rows(rows)
-    rows = profile_service.build_profile_audit_rows(rows)
-    text = _render_profile_audit(rows)
+    completed_profiles = sum(
+        not profile_service.profile_audit_missing_fields(row) for row in rows
+    )
+    audit_rows = profile_service.build_profile_audit_rows(rows)
+    # Telegram counts the bot as a member of the main chat; it is not a player.
+    total_members = max(0, await bot.get_chat_member_count(MAIN_CHAT_ID) - 1)
+    text = _render_profile_audit(
+        audit_rows,
+        total_members=total_members,
+        completed_profiles=completed_profiles,
+    )
 
     try:
         await status_message.edit_text(text, parse_mode="HTML")
