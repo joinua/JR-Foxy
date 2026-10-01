@@ -280,6 +280,13 @@ async def init_db() -> None:
         await ensure_event_schema(db)
         # Retire the legacy audit exclusions so all current members are checked.
         await db.execute("DROP TABLE IF EXISTS profile_audit_ignored")
+        from app.core.config import BOT_OWNER_ID
+
+        # The owner previously had level 4 in `admins` but a default fighter role.
+        await db.execute(
+            "UPDATE profiles SET role='Лідер' WHERE user_id=?",
+            (BOT_OWNER_ID,),
+        )
         await db.commit()
 
 

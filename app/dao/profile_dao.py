@@ -118,9 +118,25 @@ async def archive_profile(user_id: int, now: str) -> None:
 
 
 async def reactivate_profile(user_id: int, now: str) -> None:
-    """Повертає профіль до активного стану після повторного вступу."""
+    """Reactivate a member without restoring a former staff role."""
 
     async with aiosqlite.connect(DB_PATH) as db:
+        from app.core.config import BOT_OWNER_ID
+
+        await db.execute("BEGIN IMMEDIATE")
+        if user_id != BOT_OWNER_ID:
+            await db.execute(
+                """DELETE FROM admins WHERE user_id=? AND EXISTS (
+                    SELECT 1 FROM profiles WHERE user_id=?
+                    AND (status!='active' OR archived_at IS NOT NULL)
+                )""",
+                (user_id, user_id),
+            )
+            await db.execute(
+                """UPDATE profiles SET role='Боєць' WHERE user_id=?
+                   AND (status!='active' OR archived_at IS NOT NULL)""",
+                (user_id,),
+            )
         await db.execute(
             """
             UPDATE profiles
