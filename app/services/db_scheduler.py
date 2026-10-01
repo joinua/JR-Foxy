@@ -97,6 +97,15 @@ async def _handle_invite_review_due(bot: Bot, task: dict) -> None:
     if not candidate or candidate["status"] != "candidate":
         return
 
+    from app.handlers.invite import _is_main_member, _stop_existing_candidate
+
+    membership = await _is_main_member(bot, user_id)
+    if membership is True:
+        await _stop_existing_candidate(user_id)
+        return
+    if membership is None:
+        raise RuntimeError(f"Cannot verify main chat membership for candidate {user_id}")
+
     try:
         member = await bot.get_chat_member(chat_id, user_id)
     except TelegramBadRequest:

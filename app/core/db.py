@@ -752,6 +752,17 @@ async def get_candidate(user_id: int, reception_chat_id: int) -> dict | None:
         return _candidate_from_row(row)
 
 
+async def list_active_candidate_ids(reception_chat_id: int) -> list[int]:
+    """Return candidate records needing reconciliation with live membership."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT user_id FROM candidates
+               WHERE reception_chat_id=? AND status IN ('candidate', 'wait', 'invited')""",
+            (reception_chat_id,),
+        )
+        return [int(row[0]) for row in await cursor.fetchall()]
+
+
 async def get_candidate_in_any_chat(user_id: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(

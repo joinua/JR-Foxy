@@ -19,6 +19,7 @@ os.environ.setdefault("FAMILY_CHAT_ID", "-300")
 
 from aiogram.exceptions import TelegramForbiddenError
 from app.handlers import invite
+from app.services import db_scheduler
 
 
 class CandidateRulesDatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -143,6 +144,28 @@ class CandidateRulesDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_reconciliation_closes_only_verified_members(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        with (
+            patch.object(invite, "list_active_candidate_ids", AsyncMock(return_value=[10, 20, 30])),
+            patch.object(invite, "_is_main_member", AsyncMock(side_effect=[True, False, None])),
+            patch.object(invite, "_stop_existing_candidate", AsyncMock()) as stop,
+        ):
+            await invite.reconcile_reception_candidates(bot)
+        stop.assert_awaited_once_with(10)
+        self.assertEqual(bot.send_message.await_count, 2)  # Error and one conflict summary.
+
+    async def test_scheduled_review_checks_main_chat_before_buttons(self):
+        bot = SimpleNamespace(get_chat_member=AsyncMock(), send_message=AsyncMock())
+        with (
+            patch.object(db_scheduler, "get_candidate", AsyncMock(return_value={"status": "candidate"})),
+            patch.object(invite, "_is_main_member", AsyncMock(return_value=True)),
+            patch.object(invite, "_stop_existing_candidate", AsyncMock()) as stop,
+        ):
+            await db_scheduler._handle_invite_review_due(bot, {"user_id": 10, "chat_id": invite.INVITE_CHAT_ID})
+        stop.assert_awaited_once_with(10)
+        bot.send_message.assert_not_awaited()
+
     async def test_existing_member_reentering_reception_never_becomes_candidate(self):
         bot = SimpleNamespace(
             get_chat_member=AsyncMock(return_value=SimpleNamespace(status="member")),

@@ -24,6 +24,7 @@ from app.core.db import (
     get_admin_level,
     get_candidate,
     get_candidate_in_any_chat,
+    list_active_candidate_ids,
     get_candidate_invite_message,
     postpone_candidate_review,
     release_candidate_rules_reservation,
@@ -136,6 +137,35 @@ async def _admit_reception_user(bot, user_id: int) -> None:
             InlineKeyboardButton(text="Відкрити Приймальню", url="https://t.me/invite_jr")
         ]]),
     )
+
+
+async def reconcile_reception_candidates(bot) -> None:
+    """Close stale candidates after restart without creating new timers."""
+    closed = []
+    for user_id in await list_active_candidate_ids(INVITE_CHAT_ID):
+        membership = await _is_main_member(bot, user_id)
+        if membership is True:
+            await _stop_existing_candidate(user_id)
+            closed.append(user_id)
+        elif membership is None:
+            try:
+                await bot.send_message(
+                    ADMIN_LOG_CHAT_ID,
+                    f"Не вдалося звірити кандидата {user_id} після запуску бота. Статус не змінено.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔁 Повторити перевірку", callback_data=f"inv:retry:{user_id}")
+                    ]]),
+                )
+            except Exception:
+                logger.exception("Could not report candidate verification error", extra={"user_id": user_id})
+    if closed:
+        try:
+            await bot.send_message(
+                ADMIN_LOG_CHAT_ID,
+                "Вже в основному чаті; записи кандидатів закрито: " + ", ".join(map(str, closed)),
+            )
+        except Exception:
+            logger.exception("Could not report stale candidates")
 
 
 def _build_rules_keyboard(candidate_user_id: int) -> InlineKeyboardMarkup:
