@@ -19,7 +19,7 @@ PROFILE_NOT_FOUND = (
 )
 FOREIGN_ACCESS_DENIED = "Ви можете переглядати лише власну статистику надійності."
 ADMIN_CHAT_REQUIRED = (
-    "Детальний перегляд чужої статистики доступний адміністрації рівнів 3–4 "
+    "Детальний перегляд чужої статистики доступний адміністрації рівнів 2–4 "
     "лише в адмін-чаті."
 )
 PRIVATE_REQUIRED = "Детальна статистика надійності доступна в приватному чаті з ботом."
@@ -103,12 +103,12 @@ async def reliability_handler(message: Message) -> None:
     in_admin_chat = is_admin_chat(message.chat.id)
 
     if not own and not in_admin_chat:
-        await message.answer(ADMIN_CHAT_REQUIRED if level >= 3 else FOREIGN_ACCESS_DENIED)
+        await message.answer(ADMIN_CHAT_REQUIRED if level >= 2 else FOREIGN_ACCESS_DENIED)
         return
-    if not own and level < 3:
+    if not own and level < 2:
         await message.answer(FOREIGN_ACCESS_DENIED)
         return
-    if own and message.chat.type != "private" and not (in_admin_chat and level >= 3):
+    if own and message.chat.type != "private":
         await message.answer(
             PRIVATE_REQUIRED,
             reply_markup=await _private_button(message),

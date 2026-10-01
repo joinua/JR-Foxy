@@ -18,8 +18,9 @@ from app.handlers.chatid import router as chatid_router
 from app.handlers.collect_members import router as collect_router
 from app.handlers.ping import router as ping_router
 from app.handlers.start import router as start_router
+from app.handlers.help import router as help_router, PUBLIC_COMMANDS
 from app.handlers.welcome import router as welcome_router
-from app.handlers.invite import router as invite_router
+from app.handlers.invite import router as invite_router, reconcile_reception_candidates
 from app.handlers.predict import router as predict_router
 from app.handlers.profile import router as profile_router
 from app.handlers.warnings import router as warnings_router
@@ -45,6 +46,7 @@ ROUTERS = (
     invite_router,
     predict_router,
     start_router,
+    help_router,
     profile_router,
     chatid_router,
     ping_router,
@@ -93,6 +95,8 @@ async def main() -> None:
     await register_event_draft_cleanup_task()
 
     me = await bot.get_me()
+    await reconcile_reception_candidates(bot)
+    await bot.set_my_commands(PUBLIC_COMMANDS)
     HEALTH_FILE.touch()
     logger.info(
         "starting polling",

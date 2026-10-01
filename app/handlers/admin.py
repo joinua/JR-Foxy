@@ -8,67 +8,15 @@ from app.core.access import has_admin_level
 from app.core.config import BOT_OWNER_ID, FAMILY_CHAT_ID, MAIN_CHAT_ID
 from app.core.db import (
     add_admin,
-    delete_admin,
     get_admin_level,
     get_chat_setting,
     list_admins,
     set_chat_setting,
-    set_admin_level,
     update_admin_profile,
 )
 from app.services.talktop import TALKTOP_ENABLED_KEY
 
 router = Router()
-
-ADMIN_HELP_LINES = [
-    "<b>Адмін-команди рівнів 3–4</b>",
-    "",
-    "<b>Рівень 3+</b>",
-    "!send текст — надіслати оголошення в головний чат і чат Родини.",
-    "/setwelcome — оновити вітальне повідомлення в головному чаті.",
-    "/uploadrules посилання — оновити посилання на правила.",
-    "/checkwelcome — перевірити збережене вітання.",
-    "/joindate — встановити дату вступу в профілі.",
-    "/tiktok_check — примусово перевірити TikTok.",
-    "/tiktok_status — показати стан і розклад TikTok без публікації.",
-    "/warn або !warn — видати попередження гравцю.",
-    "/unwarn або !unwarn — скасувати останнє активне попередження.",
-    "/winfo або !winfo — показати інформацію про попередження гравця.",
-    "/event — відкрити керування подіями в адмін-чаті.",
-    "/reliability — переглянути статистику гравця у reply, за @username або Telegram ID.",
-    "",
-    "<b>Рівень 4</b>",
-    "/adda — додати адміністратора.",
-    "/alvl — змінити рівень адміністратора.",
-    "/dela — видалити адміністратора.",
-    "/admlist — показати список адміністраторів.",
-    "/silence_enable — увімкнути хвилину мовчання.",
-    "/silence_disable — вимкнути хвилину мовчання.",
-    "/tiktok_set_thread — встановити тему TikTok у головному чаті.",
-    "/tiktok_enable — увімкнути TikTok Notify.",
-    "/tiktok_disable — вимкнути TikTok Notify.",
-    "",
-    "<b>Профілі / адмін-панель</b>",
-    "/role — змінити роль гравця. Доступно тільки Лідеру.",
-    (
-        "/profileaudit — перевірити незаповнені профілі. "
-        "Доступно адміністраторам у службових чатах або приваті."
-    ),
-    (
-        "/profileadmin — відкрити адмін-панель профілю. "
-        "Доступно адміністраторам рівнів 1–4."
-    ),
-    "",
-    "🗣️ <b>Рейтинг балакунів</b>",
-    "",
-    "/talktop_on — увімкнути щоденний рейтинг активності в чаті Родини.",
-    "/talktop_off — вимкнути щоденний рейтинг активності.",
-    "/talktop_status — перевірити стан функції.",
-    "",
-    "Доступ: рівні 3–4.",
-    "Публікація: щодня о 23:59 у чаті Родини.",
-]
-
 
 def is_private(message: Message) -> bool:
     return message.chat.type == "private"
@@ -135,70 +83,6 @@ async def myid_handler(message: Message) -> None:
     await message.answer(" — ".join(parts))
 
 
-@router.message(Command("adda"))
-async def add_admin_handler(message: Message) -> None:
-    if not await ensure_private(message):
-        return
-
-    await sync_owner_profile(message)
-
-    if not await require_level(message, 4):
-        return
-
-    parts = message.text.split() if message.text else []
-    if len(parts) < 2:
-        await message.answer("Вкажи ID.")
-        return
-
-    try:
-        user_id = int(parts[1])
-    except ValueError:
-        await message.answer("Невірний ID.")
-        return
-
-    await add_admin(user_id)
-    await message.answer("Додано.")
-
-
-@router.message(Command("alvl"))
-async def set_admin_level_handler(message: Message) -> None:
-    if not await ensure_private(message):
-        return
-
-    await sync_owner_profile(message)
-
-    if not await require_level(message, 4):
-        return
-
-    parts = message.text.split() if message.text else []
-    if len(parts) < 3:
-        await message.answer("Вкажи ID та рівень.")
-        return
-
-    try:
-        user_id = int(parts[1])
-    except ValueError:
-        await message.answer("Невірний ID.")
-        return
-
-    try:
-        level = int(parts[2])
-    except ValueError:
-        await message.answer("Невірний рівень.")
-        return
-
-    if level not in (1, 2, 3, 4):
-        await message.answer("Рівень 1-4.")
-        return
-
-    updated = await set_admin_level(user_id, level)
-    if not updated:
-        await message.answer("Не знайдено.")
-        return
-
-    await message.answer("Готово.")
-
-
 @router.message(Command("dela"))
 async def delete_admin_handler(message: Message) -> None:
     if not await ensure_private(message):
@@ -220,12 +104,18 @@ async def delete_admin_handler(message: Message) -> None:
         await message.answer("Невірний ID.")
         return
 
-    deleted = await delete_admin(user_id)
-    if not deleted:
+    from app.services import profile_service
+
+    if user_id == BOT_OWNER_ID:
+        await message.answer("Права Лідера не можна відкликати через /dela.")
+        return
+    try:
+        await profile_service.set_role(user_id, "Боєць")
+    except profile_service.ProfileError:
         await message.answer("Не знайдено.")
         return
 
-    await message.answer("Видалено.")
+    await message.answer("Права відкликано. Роль змінено на Боєць.")
 
 
 @router.message(Command("admlist"))
@@ -312,20 +202,9 @@ async def talktop_status_handler(message: Message) -> None:
     if not await ensure_private(message):
         return
     await sync_owner_profile(message)
-    if not await require_level(message, 3):
+    if not await require_level(message, 2):
         return
 
     enabled = await get_chat_setting(FAMILY_CHAT_ID, TALKTOP_ENABLED_KEY) == "1"
     status = "увімкнено" if enabled else "вимкнено"
     await message.answer(f"Щоденний рейтинг балакунів зараз {status}.")
-
-
-@router.message(Command("adminhelp"))
-async def adminhelp_handler(message: Message) -> None:
-    if not await ensure_private(message):
-        return
-    await sync_owner_profile(message)
-    if not await require_level(message, 3):
-        return
-
-    await message.answer("\n".join(ADMIN_HELP_LINES), parse_mode="HTML")

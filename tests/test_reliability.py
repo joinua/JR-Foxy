@@ -346,7 +346,7 @@ class ReliabilityAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.answer.await_args.args[0], reliability_handler.PRIVATE_REQUIRED)
         self.assertIn("start=reliability", kwargs["reply_markup"].inline_keyboard[0][0].url)
 
-    async def test_foreign_details_require_level_three_and_admin_chat(self):
+    async def test_foreign_details_require_level_two_and_admin_chat(self):
         target = telegram_user(20, "Target")
         outside = message_for(
             actor_id=30, text="/reliability", chat_id=-1002551613807,
@@ -354,7 +354,7 @@ class ReliabilityAccessTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch.object(reliability_handler.profile_service, "sync_telegram_user", AsyncMock()),
-            patch.object(reliability_handler, "get_effective_admin_level", AsyncMock(return_value=3)),
+            patch.object(reliability_handler, "get_effective_admin_level", AsyncMock(return_value=2)),
         ):
             await reliability_handler.reliability_handler(outside)
         outside.answer.assert_awaited_once_with(reliability_handler.ADMIN_CHAT_REQUIRED)
@@ -365,12 +365,12 @@ class ReliabilityAccessTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch.object(reliability_handler.profile_service, "sync_telegram_user", AsyncMock()),
-            patch.object(reliability_handler, "get_effective_admin_level", AsyncMock(return_value=2)),
+            patch.object(reliability_handler, "get_effective_admin_level", AsyncMock(return_value=1)),
         ):
             await reliability_handler.reliability_handler(low_level)
         low_level.answer.assert_awaited_once_with(reliability_handler.FOREIGN_ACCESS_DENIED)
 
-    async def test_level_three_can_view_foreign_profile_in_admin_chat(self):
+    async def test_level_two_can_view_foreign_profile_in_admin_chat(self):
         target = telegram_user(20, "Target")
         message = message_for(
             actor_id=30, text="/reliability", chat_id=-200,
@@ -383,7 +383,7 @@ class ReliabilityAccessTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(reliability_handler.profile_service, "sync_telegram_user", AsyncMock()),
             patch.object(reliability_handler.profile_service, "ensure_profile", AsyncMock(return_value=profile)),
-            patch.object(reliability_handler, "get_effective_admin_level", AsyncMock(return_value=3)),
+            patch.object(reliability_handler, "get_effective_admin_level", AsyncMock(return_value=2)),
             patch.object(reliability_handler.reliability_service, "get_summary", AsyncMock(return_value=summary)),
         ):
             await reliability_handler.reliability_handler(message)

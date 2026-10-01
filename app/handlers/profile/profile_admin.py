@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.core.config import ADMIN_LOG_CHAT_ID, BOT_OWNER_ID
+from app.core.config import ADMIN_LOG_CHAT_ID
 from app.handlers.profile.admin_commands import (
     ACCESS_DENIED,
     TARGET_NOT_FOUND,
@@ -31,7 +31,7 @@ from app.services.birthday_reminders import (
 router = Router()
 
 MENU_LOCKED_ALERT = "Це меню відкрите іншим адміністратором."
-ROLE_OWNER_ONLY_ALERT = "Змінювати ролі може тільки Лідер."
+ROLE_OWNER_ONLY_ALERT = "Роль змінюється тільки через /role."
 JOIN_DATE_LEVEL_ALERT = "Редагувати дату вступу можуть тільки адміністратори рівня 3–4."
 
 
@@ -44,10 +44,6 @@ class ProfileAdminEdit(StatesGroup):
 
 def _menu_callback(action: str, admin_id: int, target_id: int) -> str:
     return f"pa:{action}:{admin_id}:{target_id}"
-
-
-def _role_callback(role: str, admin_id: int, target_id: int) -> str:
-    return f"pa:role:{admin_id}:{target_id}:{role}"
 
 
 def _reminder_callback(action: str, notification_id: int) -> str:
@@ -89,21 +85,11 @@ def _admin_menu_keyboard(admin_id: int, target_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎂 День народження", callback_data=_menu_callback("birthday", admin_id, target_id)),
                 InlineKeyboardButton(text="📅 Дата вступу", callback_data=_menu_callback("join", admin_id, target_id)),
             ],
-            [InlineKeyboardButton(text="🏷 Роль", callback_data=_menu_callback("roles", admin_id, target_id))],
             [InlineKeyboardButton(text="👤 Показати профіль", callback_data=_menu_callback("show", admin_id, target_id))],
             [
                 InlineKeyboardButton(text="🔄 Оновити", callback_data=_menu_callback("refresh", admin_id, target_id)),
                 InlineKeyboardButton(text="❌ Закрити", callback_data=_menu_callback("close", admin_id, target_id)),
             ],
-        ]
-    )
-
-
-def _role_keyboard(admin_id: int, target_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=role, callback_data=_role_callback(role, admin_id, target_id))]
-            for role in ("Заступник", "Адміністратор", "Офіцер", "Боєць")
         ]
     )
 
@@ -134,7 +120,7 @@ async def _check_callback_owner(callback: CallbackQuery, admin_id: int) -> bool:
     if not callback.from_user or callback.from_user.id != admin_id:
         await callback.answer(MENU_LOCKED_ALERT, show_alert=True)
         return False
-    if not 1 <= await _effective_admin_level(callback.from_user.id) <= 4:
+    if not 2 <= await _effective_admin_level(callback.from_user.id) <= 4:
         await callback.answer(ACCESS_DENIED, show_alert=True)
         return False
     return True
@@ -145,7 +131,7 @@ async def profile_admin_handler(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
     level = await _effective_admin_level(message.from_user.id)
-    if not 1 <= level <= 4:
+    if not 2 <= level <= 4:
         await message.answer(ACCESS_DENIED)
         return
 
@@ -219,21 +205,9 @@ async def profile_admin_callback(callback: CallbackQuery, state: FSMContext) -> 
         await state.set_state(ProfileAdminEdit.join_date)
         await state.update_data(admin_id=admin_id, target_id=target_id, panel_chat_id=callback.message.chat.id, panel_message_id=callback.message.message_id)
         await callback.message.answer("Надішліть дату вступу у форматі ДД.ММ.РРРР")
-    elif action == "roles":
-        if admin_id != BOT_OWNER_ID:
-            await callback.answer(ROLE_OWNER_ONLY_ALERT, show_alert=True)
-            return
-        await callback.message.answer("Оберіть роль:", reply_markup=_role_keyboard(admin_id, target_id))
-    elif action == "role":
-        if admin_id != BOT_OWNER_ID:
-            await callback.answer(ROLE_OWNER_ONLY_ALERT, show_alert=True)
-            return
-        role = parts[4]
-        if target_id == BOT_OWNER_ID:
-            await callback.answer("Роль Лідера не можна змінити.", show_alert=True)
-            return
-        await profile_service.set_role(target_id, role)
-        await _refresh_panel(callback.message, admin_id, target_id)
+    elif action in {"roles", "role"}:
+        await callback.answer(ROLE_OWNER_ONLY_ALERT, show_alert=True)
+        return
     await callback.answer()
 
 
@@ -242,7 +216,7 @@ async def _ensure_state_owner(message: Message, state: FSMContext) -> dict | Non
     if not message.from_user or data.get("admin_id") != message.from_user.id:
         return None
     level = await _effective_admin_level(message.from_user.id)
-    if not 1 <= level <= 4:
+    if not 2 <= level <= 4:
         await state.clear()
         return None
     data["admin_level"] = level

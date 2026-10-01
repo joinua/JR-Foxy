@@ -121,7 +121,7 @@ async def tiktok_check_handler(message: Message) -> None:
         await message.answer("Команда доступна в приваті або в адмін-чаті.")
         return
 
-    if not await require_level(message, 3):
+    if not await require_level(message, 4):
         return
 
     result = await force_check(message.bot)
@@ -183,7 +183,7 @@ async def tiktok_status_handler(message: Message) -> None:
     if not (is_private(message) or message.chat.id == settings.ADMIN_LOG_CHAT_ID):
         await message.answer("Команда доступна в приваті або в адмін-чаті.")
         return
-    if not await require_level(message, 3):
+    if not await require_level(message, 2):
         return
     try:
         cfg = await load_settings()

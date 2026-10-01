@@ -19,6 +19,7 @@ os.environ.setdefault("FAMILY_CHAT_ID", "-300")
 
 from aiogram.exceptions import TelegramForbiddenError
 from app.handlers import invite
+from app.services import db_scheduler
 
 
 class CandidateRulesDatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -143,6 +144,57 @@ class CandidateRulesDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_reconciliation_closes_only_verified_members(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        with (
+            patch.object(invite, "list_active_candidate_ids", AsyncMock(return_value=[10, 20, 30])),
+            patch.object(invite, "_is_main_member", AsyncMock(side_effect=[True, False, None])),
+            patch.object(invite, "_stop_existing_candidate", AsyncMock()) as stop,
+        ):
+            await invite.reconcile_reception_candidates(bot)
+        stop.assert_awaited_once_with(10)
+        self.assertEqual(bot.send_message.await_count, 2)  # Error and one conflict summary.
+
+    async def test_scheduled_review_checks_main_chat_before_buttons(self):
+        bot = SimpleNamespace(get_chat_member=AsyncMock(), send_message=AsyncMock())
+        with (
+            patch.object(db_scheduler, "get_candidate", AsyncMock(return_value={"status": "candidate"})),
+            patch.object(invite, "_is_main_member", AsyncMock(return_value=True)),
+            patch.object(invite, "_stop_existing_candidate", AsyncMock()) as stop,
+        ):
+            await db_scheduler._handle_invite_review_due(bot, {"user_id": 10, "chat_id": invite.INVITE_CHAT_ID})
+        stop.assert_awaited_once_with(10)
+        bot.send_message.assert_not_awaited()
+
+    async def test_existing_member_reentering_reception_never_becomes_candidate(self):
+        bot = SimpleNamespace(
+            get_chat_member=AsyncMock(return_value=SimpleNamespace(status="member")),
+            send_message=AsyncMock(),
+        )
+        with (
+            patch.object(invite, "get_admin_level", AsyncMock(return_value=1)),
+            patch.object(invite, "get_candidate", AsyncMock(return_value=None)),
+            patch.object(invite, "cancel_pending_tasks", AsyncMock()),
+            patch.object(invite, "upsert_candidate_on_join", AsyncMock()) as upsert,
+            patch.object(invite, "schedule_task", AsyncMock()) as schedule,
+        ):
+            await invite._admit_reception_user(bot, 10)
+        upsert.assert_not_awaited()
+        schedule.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    async def test_unknown_membership_fails_closed_and_offers_retry(self):
+        bot = SimpleNamespace(get_chat_member=AsyncMock(side_effect=RuntimeError("network")), send_message=AsyncMock())
+        with (
+            patch.object(invite, "get_admin_level", AsyncMock(return_value=0)),
+            patch.object(invite, "upsert_candidate_on_join", AsyncMock()) as upsert,
+        ):
+            await invite._admit_reception_user(bot, 10)
+        upsert.assert_not_awaited()
+        call = bot.send_message.await_args
+        self.assertEqual(call.args[0], invite.ADMIN_LOG_CHAT_ID)
+        self.assertIn("inv:retry:10", call.kwargs["reply_markup"].inline_keyboard[0][0].callback_data)
+
     async def test_filter_accepts_common_user_content_and_rejects_services(self):
         rule_filter = invite.CandidateFirstMessageFilter()
         with patch.object(
@@ -237,7 +289,8 @@ class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
                 chat=SimpleNamespace(id=-100), answer=AsyncMock(return_value=blocked)
             )
             bot = SimpleNamespace(
-                edit_message_text=AsyncMock(), create_chat_invite_link=AsyncMock()
+                edit_message_text=AsyncMock(), create_chat_invite_link=AsyncMock(),
+                get_chat_member=AsyncMock(return_value=SimpleNamespace(status="left")),
             )
             query = SimpleNamespace(
                 data="inv:accept:10",
@@ -265,6 +318,7 @@ class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_accept_reaches_existing_invite_flow_when_rules_accepted(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=-100), answer=AsyncMock())
         bot = SimpleNamespace(
+            get_chat_member=AsyncMock(return_value=SimpleNamespace(status="left")),
             create_chat_invite_link=AsyncMock(
                 side_effect=TelegramForbiddenError(
                     method="createChatInviteLink", message="forbidden"

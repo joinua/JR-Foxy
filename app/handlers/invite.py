@@ -24,6 +24,7 @@ from app.core.db import (
     get_admin_level,
     get_candidate,
     get_candidate_in_any_chat,
+    list_active_candidate_ids,
     get_candidate_invite_message,
     postpone_candidate_review,
     release_candidate_rules_reservation,
@@ -83,6 +84,88 @@ RULES_TEXT = """🦊 Почекаймо на адміністрацію клан
 ❓ То як, погоджуєшся з цими правилами?"""
 
 BLOCKED_ACCEPT_TEXT = "⚠️ Кандидат ще не погодився з обов’язковими правилами клану."
+
+
+async def _is_main_member(bot, user_id: int) -> bool | None:
+    """Return None when Telegram cannot verify membership; do not guess."""
+    try:
+        member = await bot.get_chat_member(MAIN_CHAT_ID, user_id)
+    except Exception:
+        logger.warning("Could not verify main membership", extra={"user_id": user_id}, exc_info=True)
+        return None
+    return member.status in {"member", "administrator", "creator"} or (
+        member.status == "restricted" and bool(getattr(member, "is_member", False))
+    )
+
+
+async def _stop_existing_candidate(user_id: int) -> None:
+    candidate = await get_candidate(user_id, INVITE_CHAT_ID)
+    if candidate and candidate["status"] in ACTIVE_CANDIDATE_STATUSES:
+        await update_candidate_status(user_id=user_id, reception_chat_id=INVITE_CHAT_ID, status="accepted")
+    await cancel_pending_tasks("invite_review_due", chat_id=INVITE_CHAT_ID, user_id=user_id)
+
+
+async def _admit_reception_user(bot, user_id: int) -> None:
+    level = await get_admin_level(user_id)
+    if level >= 2:
+        await _stop_existing_candidate(user_id)
+        await bot.send_message(INVITE_CHAT_ID, "Адміністрація JR вже має доступ до Приймальні.")
+        return
+    membership = await _is_main_member(bot, user_id)
+    if membership is True:
+        await _stop_existing_candidate(user_id)
+        await bot.send_message(INVITE_CHAT_ID, "Учасник основного чату вже в клані. Статус кандидата не створюю.")
+        return
+    if membership is None:
+        await bot.send_message(
+            ADMIN_LOG_CHAT_ID,
+            f"Не вдалося перевірити членство {user_id} в основному чаті. Статус кандидата не створено.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔁 Повторити перевірку", callback_data=f"inv:retry:{user_id}")
+            ]]),
+        )
+        return
+    now = int(time.time())
+    due_at = now + 3 * 60 * 60
+    await upsert_candidate_on_join(user_id=user_id, reception_chat_id=INVITE_CHAT_ID, review_due_at=due_at)
+    await cancel_pending_tasks("invite_review_due", chat_id=INVITE_CHAT_ID, user_id=user_id)
+    await schedule_task(task_type="invite_review_due", run_at=due_at, chat_id=INVITE_CHAT_ID, user_id=user_id)
+    await bot.send_message(INVITE_CHAT_ID, INVITE_WELCOME_TEXT)
+    await bot.send_message(
+        ADMIN_LOG_CHAT_ID, ADMIN_LOG_NEW_CANDIDATE_TEXT,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Відкрити Приймальню", url="https://t.me/invite_jr")
+        ]]),
+    )
+
+
+async def reconcile_reception_candidates(bot) -> None:
+    """Close stale candidates after restart without creating new timers."""
+    closed = []
+    for user_id in await list_active_candidate_ids(INVITE_CHAT_ID):
+        membership = await _is_main_member(bot, user_id)
+        if membership is True:
+            await _stop_existing_candidate(user_id)
+            closed.append(user_id)
+        elif membership is None:
+            try:
+                await bot.send_message(
+                    ADMIN_LOG_CHAT_ID,
+                    f"Не вдалося звірити кандидата {user_id} після запуску бота. Статус не змінено.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔁 Повторити перевірку", callback_data=f"inv:retry:{user_id}")
+                    ]]),
+                )
+            except Exception:
+                logger.exception("Could not report candidate verification error", extra={"user_id": user_id})
+    if closed:
+        try:
+            await bot.send_message(
+                ADMIN_LOG_CHAT_ID,
+                "Вже в основному чаті; записи кандидатів закрито: " + ", ".join(map(str, closed)),
+            )
+        except Exception:
+            logger.exception("Could not report stale candidates")
 
 
 def _build_rules_keyboard(candidate_user_id: int) -> InlineKeyboardMarkup:
@@ -185,43 +268,34 @@ async def show_candidate_buttons(message: Message, candidate_user_id: int) -> No
 
 @router.message(F.chat.id == INVITE_CHAT_ID, F.new_chat_members)
 async def on_candidate_join_reception(message: Message) -> None:
-    now = int(time.time())
-    review_due_at = now + 3 * 60 * 60
-
     for user in message.new_chat_members:
-        await upsert_candidate_on_join(
-            user_id=user.id,
-            reception_chat_id=INVITE_CHAT_ID,
-            review_due_at=review_due_at,
-        )
-        await cancel_pending_tasks(
-            "invite_review_due", chat_id=INVITE_CHAT_ID, user_id=user.id
-        )
-        await schedule_task(
-            task_type="invite_review_due",
-            run_at=review_due_at,
-            chat_id=INVITE_CHAT_ID,
-            user_id=user.id,
-        )
+        await _admit_reception_user(message.bot, user.id)
 
-        await message.answer(INVITE_WELCOME_TEXT)
-        await message.bot.send_message(
-            ADMIN_LOG_CHAT_ID,
-            ADMIN_LOG_NEW_CANDIDATE_TEXT,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="Відкрити Приймальню", url="https://t.me/invite_jr"
-                        )
-                    ]
-                ]
-            ),
-        )
+
+@router.callback_query(F.data.startswith("inv:retry:"))
+async def retry_reception_check(query: CallbackQuery) -> None:
+    if await get_admin_level(query.from_user.id) < 2:
+        await query.answer("Недостатньо прав.", show_alert=True)
+        return
+    try:
+        user_id = int((query.data or "").split(":")[2])
+        reception = await query.bot.get_chat_member(INVITE_CHAT_ID, user_id)
+    except Exception:
+        await query.answer("Не можу підтвердити присутність у Приймальні.", show_alert=True)
+        return
+    if reception.status in {"left", "kicked"}:
+        await query.answer("Людина вже вийшла з Приймальні.", show_alert=True)
+        return
+    await _admit_reception_user(query.bot, user_id)
+    await query.answer("Повторну перевірку виконано.")
 
 
 @router.message(F.chat.id == INVITE_CHAT_ID, Command("candidate"))
 async def force_candidate_review(message: Message) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        logger.debug("Could not delete /candidate command", exc_info=True)
     admin_id = message.from_user.id if message.from_user else 0
     if await get_admin_level(admin_id) < 2:
         await message.answer("Слухаюся лише адміністраторів")
@@ -232,6 +306,14 @@ async def force_candidate_review(message: Message) -> None:
         return
 
     candidate_user = message.reply_to_message.from_user
+    membership = await _is_main_member(message.bot, candidate_user.id)
+    if membership is None:
+        await message.answer("Не можу перевірити основний чат. Повтори команду пізніше.")
+        return
+    if membership:
+        await _stop_existing_candidate(candidate_user.id)
+        await message.answer("Людина вже є в основному чаті. Статус кандидата скасовано.")
+        return
     candidate = await get_candidate(candidate_user.id, INVITE_CHAT_ID)
     if not candidate:
         await message.answer(
@@ -435,6 +517,14 @@ async def on_invite_callback(query: CallbackQuery) -> None:
     reviewed_at = int(time.time())
 
     if action == "accept":
+        membership = await _is_main_member(query.bot, candidate_user_id)
+        if membership is None:
+            await query.answer("Не можу перевірити основний чат. Спробуй пізніше.", show_alert=True)
+            return
+        if membership:
+            await _stop_existing_candidate(candidate_user_id)
+            await query.answer("Людина вже в основному чаті. Кандидата закрито.", show_alert=True)
+            return
         if candidate["rules_status"] != "accepted":
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
