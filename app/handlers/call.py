@@ -9,7 +9,8 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.core.db import get_admin_level, get_call_members
+from app.core.access import has_admin_level
+from app.core.db import get_call_members
 
 
 router = Router()
@@ -84,29 +85,9 @@ async def bot_can_delete_messages(message: Message) -> bool:
 
 
 async def require_level_2_plus(message: Message) -> bool:
-    """
-    Заготовка під адмін-рівні 2–4.
-    Зараз fallback: дозволяємо лише адмінам/креатору чату.
-    Потім заміниш на SQLite admin_levels без пошуку по всьому коду.
-    """
-    try:
-        level = await get_admin_level(message.from_user.id)
-        if int(level) >= 2:
-            return True
-        await message.answer("Недостатньо прав. Потрібен рівень 2+.")
-        return False
-    except (TelegramBadRequest, TelegramForbiddenError):
-        pass
-
-
-    try:
-        cm = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
-        if cm.status in ("administrator", "creator"):
-            return True
-    except (TelegramBadRequest, TelegramForbiddenError):
-        pass
-
-    await message.answer("Недостатньо прав. Потрібен модератор/адмін (level 2+).")
+    if message.from_user and await has_admin_level(message.from_user.id, 2):
+        return True
+    await message.answer("Недостатньо прав. Потрібен рівень 2+.")
     return False
 
 

@@ -178,7 +178,7 @@ async def check_welcome(message: Message):
     uid = message.from_user.id if message.from_user else 0
     level = await get_admin_level(uid)
 
-    if uid != BOT_OWNER_ID and level < 3:
+    if uid != BOT_OWNER_ID and level < 2:
         return
 
     value = await get_chat_setting(MAIN_CHAT_ID, WELCOME_HTML_KEY)

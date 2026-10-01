@@ -1,12 +1,16 @@
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
+from app.core.access import has_admin_level
 
 router = Router()
 
 
 @router.message(Command("chatid"))
 async def chatid_handler(message: Message) -> None:
+    if not message.from_user or not await has_admin_level(message.from_user.id, 4):
+        await message.answer("Недостатньо прав. Потрібен рівень 4.")
+        return
     # 1) Команда тільки для груп/супергруп
     if message.chat.type not in ("group", "supergroup"):
         await message.answer("Ця команда працює тільки в групових чатах, куди я додана.")

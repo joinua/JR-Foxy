@@ -129,14 +129,6 @@ async def archive_profile(user_id: int) -> None:
     await profile_dao.archive_profile(user_id, _now_iso())
 
 
-async def ignore_profile_audit_identifier(identifier: str, ignored_by: int) -> dict:
-    return await profile_dao.ignore_profile_audit_identifier(
-        identifier,
-        ignored_by,
-        int(utc_now().timestamp()),
-    )
-
-
 async def reactivate_profile(user_id: int) -> None:
     await profile_dao.reactivate_profile(user_id, _now_iso())
 
@@ -220,6 +212,10 @@ async def set_role(target: Any | int, role: str) -> None:
     if user_id == BOT_OWNER_ID:
         raise ProfileError("owner role cannot be changed")
 
+    # Access reads the profile role, so revoke or grant it before touching
+    # legacy admin metadata. A stale admin row cannot restore permissions.
+    await profile_dao.update_role(user_id, role, _now_iso())
+
     if role == "Боєць":
         await delete_admin(user_id)
     else:
@@ -235,8 +231,6 @@ async def set_role(target: Any | int, role: str) -> None:
         await add_admin(user_id, first_name, last_name, username)
         await set_admin_level(user_id, ROLE_ADMIN_LEVELS[role])
         await update_admin_profile(user_id, first_name, last_name, username)
-
-    await profile_dao.update_role(user_id, role, _now_iso())
 
 
 async def set_join_date(target: Any | int, join_date: str) -> None:

@@ -278,6 +278,8 @@ async def init_db() -> None:
 
         await ensure_tiktok_schema(db)
         await ensure_event_schema(db)
+        # Retire the legacy audit exclusions so all current members are checked.
+        await db.execute("DROP TABLE IF EXISTS profile_audit_ignored")
         await db.commit()
 
 
@@ -416,32 +418,60 @@ async def delete_admin(user_id: int) -> bool:
 
 
 async def get_admin_level(user_id: int) -> int:
-    """Повертає рівень адміністратора або 0, якщо його немає."""
+    """Resolve permissions from the active clan role, never from stale admin rows."""
+
+    from app.core.config import BOT_OWNER_ID
+
+    if int(user_id) == BOT_OWNER_ID:
+        return 4
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT level FROM admins WHERE user_id=?",
+            """
+            SELECT role FROM profiles
+            WHERE user_id=? AND COALESCE(status, 'active')='active'
+              AND archived_at IS NULL AND deleted_at IS NULL
+            """,
             (user_id,),
         )
         row = await cursor.fetchone()
-        return int(row[0]) if row else 0
+        return {
+            "Офіцер": 1,
+            "Адміністратор": 2,
+            "Заступник": 3,
+        }.get(row[0], 0) if row else 0
 
 
 async def list_admins() -> list[tuple[int, str, str, str, int]]:
-    """Повертає список адміністраторів, відсортований за рівнем."""
+    """Return current role holders, excluding obsolete legacy admin entries."""
+
+    from app.core.config import BOT_OWNER_ID
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
             SELECT
-                user_id,
-                COALESCE(first_name, ''),
-                COALESCE(last_name, ''),
-                COALESCE(username, ''),
-                level
-            FROM admins
-            ORDER BY level DESC, user_id ASC
-            """
+                a.user_id,
+                COALESCE(a.first_name, ''),
+                COALESCE(a.last_name, ''),
+                COALESCE(a.username, ''),
+                CASE
+                    WHEN a.user_id=? THEN 4
+                    WHEN p.role='Заступник' THEN 3
+                    WHEN p.role='Адміністратор' THEN 2
+                    WHEN p.role='Офіцер' THEN 1
+                    ELSE 0
+                END AS effective_level
+            FROM admins a
+            LEFT JOIN profiles p ON p.user_id=a.user_id
+            WHERE a.user_id=? OR (
+                p.role IN ('Заступник', 'Адміністратор', 'Офіцер')
+                AND COALESCE(p.status, 'active')='active'
+                AND p.archived_at IS NULL AND p.deleted_at IS NULL
+            )
+            ORDER BY effective_level DESC, a.user_id ASC
+            """,
+            (BOT_OWNER_ID, BOT_OWNER_ID),
         )
         rows = await cursor.fetchall()
         return [(int(r[0]), r[1], r[2], r[3], int(r[4])) for r in rows]

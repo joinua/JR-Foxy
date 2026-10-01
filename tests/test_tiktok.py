@@ -408,7 +408,7 @@ class TikTokTests(unittest.IsolatedAsyncioTestCase):
         )
         result = tt.CheckResult("feed_error", reason="timeout", enabled=False)
         with patch.object(
-            admin_tiktok, "get_admin_level", AsyncMock(return_value=3)
+            admin_tiktok, "get_admin_level", AsyncMock(return_value=4)
         ), patch.object(admin_tiktok, "force_check", AsyncMock(return_value=result)):
             await admin_tiktok.tiktok_check_handler(message)
         text = message.answer.call_args.args[0]

@@ -21,6 +21,5 @@ async def start_handler(message: Message) -> None:
     await message.answer(
         "Привіт, я - JRツFoxy.\n"
         "Я помічничка клану JokerRecon CODM.\n"
-        "Для того, щоб я тобі сказала, що я можу - відправ /help\n"
-        "Але ця команда поки не працює"
+        "Щоб дізнатися про команди, відправ /help."
     )

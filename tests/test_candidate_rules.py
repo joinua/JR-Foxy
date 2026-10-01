@@ -143,6 +143,35 @@ class CandidateRulesDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_member_reentering_reception_never_becomes_candidate(self):
+        bot = SimpleNamespace(
+            get_chat_member=AsyncMock(return_value=SimpleNamespace(status="member")),
+            send_message=AsyncMock(),
+        )
+        with (
+            patch.object(invite, "get_admin_level", AsyncMock(return_value=1)),
+            patch.object(invite, "get_candidate", AsyncMock(return_value=None)),
+            patch.object(invite, "cancel_pending_tasks", AsyncMock()),
+            patch.object(invite, "upsert_candidate_on_join", AsyncMock()) as upsert,
+            patch.object(invite, "schedule_task", AsyncMock()) as schedule,
+        ):
+            await invite._admit_reception_user(bot, 10)
+        upsert.assert_not_awaited()
+        schedule.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    async def test_unknown_membership_fails_closed_and_offers_retry(self):
+        bot = SimpleNamespace(get_chat_member=AsyncMock(side_effect=RuntimeError("network")), send_message=AsyncMock())
+        with (
+            patch.object(invite, "get_admin_level", AsyncMock(return_value=0)),
+            patch.object(invite, "upsert_candidate_on_join", AsyncMock()) as upsert,
+        ):
+            await invite._admit_reception_user(bot, 10)
+        upsert.assert_not_awaited()
+        call = bot.send_message.await_args
+        self.assertEqual(call.args[0], invite.ADMIN_LOG_CHAT_ID)
+        self.assertIn("inv:retry:10", call.kwargs["reply_markup"].inline_keyboard[0][0].callback_data)
+
     async def test_filter_accepts_common_user_content_and_rejects_services(self):
         rule_filter = invite.CandidateFirstMessageFilter()
         with patch.object(
@@ -237,7 +266,8 @@ class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
                 chat=SimpleNamespace(id=-100), answer=AsyncMock(return_value=blocked)
             )
             bot = SimpleNamespace(
-                edit_message_text=AsyncMock(), create_chat_invite_link=AsyncMock()
+                edit_message_text=AsyncMock(), create_chat_invite_link=AsyncMock(),
+                get_chat_member=AsyncMock(return_value=SimpleNamespace(status="left")),
             )
             query = SimpleNamespace(
                 data="inv:accept:10",
@@ -265,6 +295,7 @@ class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_accept_reaches_existing_invite_flow_when_rules_accepted(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=-100), answer=AsyncMock())
         bot = SimpleNamespace(
+            get_chat_member=AsyncMock(return_value=SimpleNamespace(status="left")),
             create_chat_invite_link=AsyncMock(
                 side_effect=TelegramForbiddenError(
                     method="createChatInviteLink", message="forbidden"
