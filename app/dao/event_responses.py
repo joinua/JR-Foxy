@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 
@@ -9,6 +10,8 @@ import aiosqlite
 
 from app.core import db as core_db
 from app.core.event_types import MAX_EVENT_PARTICIPANTS
+
+_event_response_locks: dict[int, asyncio.Lock] = {}
 
 
 @dataclass(frozen=True)
@@ -93,12 +96,28 @@ async def apply_response(
     telegram_name: str,
     now: int,
 ) -> ResponseDecision:
-    """Apply one response with time and capacity checks in one transaction."""
+    """Queue responses for one event before entering SQLite's write transaction."""
 
     if action not in {"going", "thinking", "declined"}:
         return ResponseDecision("invalid")
+    lock = _event_response_locks.setdefault(event_id, asyncio.Lock())
+    async with lock:
+        return await _apply_response_locked(
+            event_id, user_id, action, telegram_name=telegram_name, now=now,
+        )
 
-    async with aiosqlite.connect(core_db.DB_PATH) as db:
+
+async def _apply_response_locked(
+    event_id: int,
+    user_id: int,
+    action: str,
+    *,
+    telegram_name: str,
+    now: int,
+) -> ResponseDecision:
+    """Apply one response with time and capacity checks in one transaction."""
+
+    async with aiosqlite.connect(core_db.DB_PATH, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("BEGIN IMMEDIATE")
         cursor = await db.execute(
