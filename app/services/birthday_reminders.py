@@ -13,13 +13,6 @@ from aiogram import Bot
 from app.core.config import ADMIN_LOG_CHAT_ID
 from app.core.dates import KYIV_TZ, to_kyiv_datetime
 from app.core.db import DB_PATH, cancel_pending_tasks, schedule_task
-from app.handlers.profile.utils import (
-    EMPTY_VALUE,
-    age_on,
-    format_duration,
-    html_user_mention,
-    pluralize,
-)
 from app.services import profile_service
 
 BIRTHDAY_DAILY_TASK = "birthday_daily"
@@ -51,19 +44,23 @@ def _profile_display_name(profile: dict) -> str:
 
 
 def _profile_mention(profile: dict) -> str:
+    from app.handlers.profile.utils import html_user_mention
     return html_user_mention(int(profile["user_id"]), _profile_display_name(profile))
 
 
 def _nickname_html(profile: dict) -> str:
+    from app.handlers.profile.utils import EMPTY_VALUE
     nickname = str(profile.get("game_nickname") or EMPTY_VALUE)
     return f"<code>{escape(nickname)}</code>"
 
 
 def _birthday_age(profile: dict, birthday_date: date) -> int:
+    from app.handlers.profile.utils import age_on
     return age_on(date.fromisoformat(str(profile["birthday"])), birthday_date)
 
 
 def render_birthday_message(profile: dict, birthday_date: date) -> str:
+    from app.handlers.profile.utils import pluralize
     age = _birthday_age(profile, birthday_date)
     return (
         "🎉 <b>Сьогодні день народження!</b>\n\n"
@@ -80,6 +77,7 @@ def render_birthday_pre_message(
     responsible_user_id: int | None = None,
     responsible_name: str | None = None,
 ) -> str:
+    from app.handlers.profile.utils import EMPTY_VALUE, format_duration, html_user_mention, pluralize
     age = _birthday_age(profile, birthday_date)
     if profile.get("join_date"):
         clan_duration = format_duration(
@@ -273,7 +271,7 @@ async def claim_birthday_pre_notification(
             """
             UPDATE birthday_pre_notifications
             SET status='claimed', responsible_user_id=?, responsible_name=?, claimed_at=?
-            WHERE id=? AND status='pending' AND responsible_user_id IS NULL
+            WHERE id=? AND status='pending' AND responsible_user_id IS NULL AND greeting_status='draft'
             """,
             (
                 responsible_user_id,
@@ -357,6 +355,10 @@ async def send_daily_birthday_reminders(bot: Bot) -> None:
                 today.isoformat(),
             )
             if notification_id is None:
+                continue
+            from app.services.birthday_greetings import was_published
+            if await was_published(int(profile["user_id"]), today.isoformat()):
+                await complete_birthday_notification(notification_id)
                 continue
             try:
                 message_id = await _send_notification(bot, notification_id, profile)

@@ -316,42 +316,22 @@ class BirthdayDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BirthdayCallbackTests(unittest.IsolatedAsyncioTestCase):
-    async def test_pre_notification_claim_edits_message_with_responsible_mention(self):
+    async def test_pre_notification_claim_opens_greeting_controls(self):
+        from app.services import birthday_greetings
         callback = SimpleNamespace(
-            data="bdpre:claim:7",
-            from_user=SimpleNamespace(id=20, full_name="Officer <One>"),
-            message=SimpleNamespace(edit_text=AsyncMock()),
-            answer=AsyncMock(),
+            data="bdpre:claim:7", from_user=SimpleNamespace(id=20, full_name="Officer <One>"),
+            message=SimpleNamespace(chat=SimpleNamespace(id=profile_admin.ADMIN_LOG_CHAT_ID)),
+            bot=object(), answer=AsyncMock(),
         )
-        claimed = {
-            "user_id": 10,
-            "birthday_date": "2026-09-03",
-            "responsible_user_id": 20,
-            "responsible_name": "Officer <One>",
-        }
         with (
-            patch.object(
-                profile_admin,
-                "_effective_admin_level",
-                AsyncMock(return_value=1),
-            ),
-            patch.object(
-                profile_admin,
-                "claim_birthday_pre_notification",
-                AsyncMock(return_value=claimed),
-            ),
-            patch.object(
-                profile_admin.profile_service,
-                "get_profile",
-                AsyncMock(return_value=profile_data()),
-            ),
+            patch.object(profile_admin, "_effective_admin_level", AsyncMock(return_value=1)),
+            patch.object(profile_admin, "claim_birthday_pre_notification", AsyncMock(return_value={"user_id": 10})),
+            patch.object(birthday_greetings, "check_destination", AsyncMock()) as check,
+            patch.object(birthday_greetings, "refresh_card", AsyncMock()) as refresh,
         ):
             await profile_admin.birthday_pre_reminder_callback(callback)
-
-        edited_text = callback.message.edit_text.await_args.args[0]
-        self.assertIn("Відповідальний за привітання", edited_text)
-        self.assertIn('href="tg://user?id=20"', edited_text)
-        self.assertIsNone(callback.message.edit_text.await_args.kwargs["reply_markup"])
+        check.assert_awaited_once_with(callback.bot, 7)
+        refresh.assert_awaited_once_with(callback.bot, 7)
 
     async def test_pre_notification_claim_rejects_non_admin(self):
         callback = SimpleNamespace(
