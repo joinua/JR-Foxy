@@ -117,6 +117,16 @@ async def change(check_id: int, actor_id: int | None, action: str, **values) -> 
         return bool(cursor.rowcount)
 
 
+async def attach_message(check_id: int, message_id: int) -> None:
+    """A notification may be published after a concurrent return/closure."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE clan_exit_checks SET message_id=? WHERE id=? AND message_id IS NULL",
+            (message_id, check_id),
+        )
+        await db.commit()
+
+
 async def open_cases() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row

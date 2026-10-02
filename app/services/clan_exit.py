@@ -137,7 +137,7 @@ async def publish(bot, case: dict) -> None:
     message = await bot.send_message(
         ADMIN_LOG_CHAT_ID, card(case), parse_mode="HTML", reply_markup=keyboard(case),
     )
-    await dao.change(case["id"], None, "message_published", message_id=message.message_id)
+    await dao.attach_message(case["id"], message.message_id)
 
 
 async def record_exit(bot, user, kind: str, profile: dict | None) -> None:
