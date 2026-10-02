@@ -289,6 +289,10 @@ async def init_db() -> None:
         )
         await db.commit()
 
+    async with aiosqlite.connect(DB_PATH) as db:
+        from app.dao.clan_exit import ensure_schema as ensure_clan_exit_schema
+        await ensure_clan_exit_schema(db)
+
 
 async def reserve_rules_reminder(
     chat_id: int,

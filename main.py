@@ -20,6 +20,7 @@ from app.handlers.ping import router as ping_router
 from app.handlers.start import router as start_router
 from app.handlers.help import router as help_router, PUBLIC_COMMANDS
 from app.handlers.welcome import router as welcome_router
+from app.handlers.clan_exit import router as clan_exit_router
 from app.handlers.invite import router as invite_router, reconcile_reception_candidates
 from app.handlers.predict import router as predict_router
 from app.handlers.profile import router as profile_router
@@ -28,6 +29,7 @@ from app.handlers.rules_reminder import router as rules_reminder_router
 from app.handlers.talktop import router as talktop_router
 from app.handlers.events import router as events_router
 from app.services.event_service import reconcile_startup as reconcile_events_startup
+from app.services.clan_exit import recover_open_cards
 from app.services.event_jobs import register_event_draft_cleanup_task
 from app.services.silence import run_silence_scheduler
 from app.services.db_scheduler import register_tiktok_task, run_db_scheduler
@@ -43,6 +45,7 @@ HEALTH_HEARTBEAT_SECONDS = 30
 ROUTERS = (
     chat_guard_router,  # має бути першим в списку
     welcome_router,
+    clan_exit_router,
     invite_router,
     predict_router,
     start_router,
@@ -96,6 +99,7 @@ async def main() -> None:
 
     me = await bot.get_me()
     await reconcile_reception_candidates(bot)
+    await recover_open_cards(bot)
     await bot.set_my_commands(PUBLIC_COMMANDS)
     HEALTH_FILE.touch()
     logger.info(
