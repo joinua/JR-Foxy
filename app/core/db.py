@@ -126,6 +126,22 @@ async def _ensure_birthday_schema(db: aiosqlite.Connection) -> None:
         """
     )
 
+    cursor = await db.execute("PRAGMA table_info(birthday_pre_notifications)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    for name, definition in {
+        "greeting_html": "TEXT",
+        "greeting_status": "TEXT NOT NULL DEFAULT 'draft'",
+        "allow_main": "INTEGER NOT NULL DEFAULT 0",
+        "family_membership": "INTEGER",
+        "greeting_chat_id": "INTEGER",
+        "greeting_message_id": "INTEGER",
+        "greeting_sent_at": "INTEGER",
+        "evening_notified": "INTEGER NOT NULL DEFAULT 0",
+        "issue_notified": "TEXT",
+    }.items():
+        if name not in columns:
+            await db.execute(f"ALTER TABLE birthday_pre_notifications ADD COLUMN {name} {definition}")
+
 
 async def init_db() -> None:
     """Ініціалізує базу даних та створює таблиці, якщо їх ще немає."""

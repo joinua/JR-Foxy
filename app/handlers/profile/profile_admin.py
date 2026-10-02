@@ -332,6 +332,9 @@ async def birthday_pre_reminder_callback(callback: CallbackQuery) -> None:
         await callback.answer(ACCESS_DENIED, show_alert=True)
         return
 
+    if callback.message.chat.id != ADMIN_LOG_CHAT_ID:
+        await callback.answer(ACCESS_DENIED, show_alert=True)
+        return
     _, action, notification_id = callback.data.split(":", 2)
     if action != "claim":
         await callback.answer("Невідома дія.", show_alert=True)
@@ -349,19 +352,8 @@ async def birthday_pre_reminder_callback(callback: CallbackQuery) -> None:
         )
         return
 
-    profile = await profile_service.get_profile(int(claimed["user_id"]))
-    if not profile:
-        await callback.answer(PROFILE_NOT_FOUND, show_alert=True)
-        return
+    from app.services import birthday_greetings
 
-    await callback.message.edit_text(
-        render_birthday_pre_message(
-            profile,
-            date.fromisoformat(str(claimed["birthday_date"])),
-            responsible_user_id=int(claimed["responsible_user_id"]),
-            responsible_name=str(claimed["responsible_name"]),
-        ),
-        parse_mode="HTML",
-        reply_markup=None,
-    )
+    await birthday_greetings.check_destination(callback.bot, int(notification_id))
+    await birthday_greetings.refresh_card(callback.bot, int(notification_id))
     await callback.answer("Відповідального за привітання призначено.")

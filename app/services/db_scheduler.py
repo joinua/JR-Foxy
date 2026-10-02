@@ -22,6 +22,7 @@ from app.core.db import (
 )
 
 from app.services.tiktok_watcher import check_and_notify
+from app.services.birthday_greetings import TASK as GREETINGS_TASK, run_greetings
 from app.services.birthday_reminders import (
     BIRTHDAY_DAILY_TASK,
     BIRTHDAY_REMIND_TASK,
@@ -142,6 +143,7 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
                     "tiktok_check", int(time.time()) + TIKTOK_CHECK_INTERVAL_SECONDS
                 )
 
+            await ensure_periodic_task(GREETINGS_TASK, int(time.time()))
             tasks = await fetch_due_tasks(limit=30)
 
             for task in tasks:
@@ -160,6 +162,9 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
                         await run_reminder(bot, int(payload["id"]), int(payload["number"]))
                     elif task["task_type"] == "tiktok_check":
                         await _handle_tiktok_check(bot)
+                    elif task["task_type"] == GREETINGS_TASK:
+                        await run_greetings(bot)
+                        await ensure_periodic_task(GREETINGS_TASK, int(time.time()) + 30, include_running=False)
                     elif task["task_type"] == BIRTHDAY_DAILY_TASK:
                         await send_daily_birthday_reminders(bot)
                     elif task["task_type"] == BIRTHDAY_REMIND_TASK:
