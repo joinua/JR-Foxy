@@ -99,23 +99,21 @@ async def _handle_invite_review_due(bot: Bot, task: dict) -> None:
     if not candidate or candidate["status"] != "candidate":
         return
 
-    from app.handlers.invite import _is_main_member, _stop_existing_candidate
+    from app.handlers.invite import (
+        _is_chat_member, _is_main_member, _stop_existing_candidate, _close_departed_candidate,
+    )
 
+    reception = await _is_chat_member(bot, chat_id, user_id)
+    if reception is False:
+        await _close_departed_candidate(user_id)
+        await bot.send_message(chat_id, LEFT_RECEPTION_TEXT)
+        return
     membership = await _is_main_member(bot, user_id)
     if membership is True:
         await _stop_existing_candidate(user_id)
         return
-    if membership is None:
-        raise RuntimeError(f"Cannot verify main chat membership for candidate {user_id}")
-
-    try:
-        member = await bot.get_chat_member(chat_id, user_id)
-    except TelegramBadRequest:
-        member = None
-
-    if not member or member.status in {"left", "kicked"}:
-        await bot.send_message(chat_id, LEFT_RECEPTION_TEXT)
-        return
+    if membership is None or reception is None:
+        raise RuntimeError(f"Cannot verify chat membership for candidate {user_id}")
 
     sent = await bot.send_message(
         chat_id,
