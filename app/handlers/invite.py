@@ -86,16 +86,38 @@ RULES_TEXT = """🦊 Почекаймо на адміністрацію клан
 BLOCKED_ACCEPT_TEXT = "⚠️ Кандидат ще не погодився з обов’язковими правилами клану."
 
 
-async def _is_main_member(bot, user_id: int) -> bool | None:
+async def _is_chat_member(bot, chat_id: int, user_id: int) -> bool | None:
     """Return None when Telegram cannot verify membership; do not guess."""
     try:
-        member = await bot.get_chat_member(MAIN_CHAT_ID, user_id)
+        member = await bot.get_chat_member(chat_id, user_id)
+    except TelegramBadRequest as exc:
+        # Telegram sometimes reports an absent user as an error instead of `left`.
+        # Keep all other API errors unknown, including bad chat IDs and permissions.
+        if any(reason in str(exc).lower() for reason in (
+            "user not found", "member not found", "user not participant",
+        )):
+            return False
+        logger.warning("Could not verify membership: chat_id=%s user_id=%s error=%s", chat_id, user_id, exc)
+        return None
     except Exception:
-        logger.warning("Could not verify main membership", extra={"user_id": user_id}, exc_info=True)
+        logger.warning("Could not verify membership", extra={"chat_id": chat_id, "user_id": user_id}, exc_info=True)
         return None
     return member.status in {"member", "administrator", "creator"} or (
         member.status == "restricted" and bool(getattr(member, "is_member", False))
     )
+
+
+async def _is_main_member(bot, user_id: int) -> bool | None:
+    return await _is_chat_member(bot, MAIN_CHAT_ID, user_id)
+
+
+async def _close_departed_candidate(user_id: int) -> None:
+    candidate = await get_candidate(user_id, INVITE_CHAT_ID)
+    if candidate and candidate["status"] in ACTIVE_CANDIDATE_STATUSES:
+        await update_candidate_status(
+            user_id=user_id, reception_chat_id=INVITE_CHAT_ID, status="left",
+        )
+    await cancel_pending_tasks("invite_review_due", chat_id=INVITE_CHAT_ID, user_id=user_id)
 
 
 async def _stop_existing_candidate(user_id: int) -> None:
@@ -142,12 +164,18 @@ async def _admit_reception_user(bot, user_id: int) -> None:
 async def reconcile_reception_candidates(bot) -> None:
     """Close stale candidates after restart without creating new timers."""
     closed = []
+    departed = []
     for user_id in await list_active_candidate_ids(INVITE_CHAT_ID):
+        reception = await _is_chat_member(bot, INVITE_CHAT_ID, user_id)
+        if reception is False:
+            await _close_departed_candidate(user_id)
+            departed.append(user_id)
+            continue
         membership = await _is_main_member(bot, user_id)
         if membership is True:
             await _stop_existing_candidate(user_id)
             closed.append(user_id)
-        elif membership is None:
+        elif membership is None or reception is None:
             try:
                 await bot.send_message(
                     ADMIN_LOG_CHAT_ID,
@@ -166,6 +194,15 @@ async def reconcile_reception_candidates(bot) -> None:
             )
         except Exception:
             logger.exception("Could not report stale candidates")
+
+    if departed:
+        try:
+            await bot.send_message(
+                ADMIN_LOG_CHAT_ID,
+                "Вже вийшли з Приймальні; записи кандидатів закрито: " + ", ".join(map(str, departed)),
+            )
+        except Exception:
+            logger.exception("Could not report departed candidates")
 
 
 def _build_rules_keyboard(candidate_user_id: int) -> InlineKeyboardMarkup:
@@ -272,6 +309,11 @@ async def on_candidate_join_reception(message: Message) -> None:
         await _admit_reception_user(message.bot, user.id)
 
 
+@router.message(F.chat.id == INVITE_CHAT_ID, F.left_chat_member)
+async def on_candidate_leave_reception(message: Message) -> None:
+    await _close_departed_candidate(message.left_chat_member.id)
+
+
 @router.callback_query(F.data.startswith("inv:retry:"))
 async def retry_reception_check(query: CallbackQuery) -> None:
     if await get_admin_level(query.from_user.id) < 2:
@@ -279,12 +321,16 @@ async def retry_reception_check(query: CallbackQuery) -> None:
         return
     try:
         user_id = int((query.data or "").split(":")[2])
-        reception = await query.bot.get_chat_member(INVITE_CHAT_ID, user_id)
-    except Exception:
+    except (ValueError, IndexError):
+        await query.answer("Некоректна перевірка.", show_alert=True)
+        return
+    reception = await _is_chat_member(query.bot, INVITE_CHAT_ID, user_id)
+    if reception is None:
         await query.answer("Не можу підтвердити присутність у Приймальні.", show_alert=True)
         return
-    if reception.status in {"left", "kicked"}:
-        await query.answer("Людина вже вийшла з Приймальні.", show_alert=True)
+    if reception is False:
+        await _close_departed_candidate(user_id)
+        await query.answer("Людина вже вийшла з Приймальні. Запис кандидата закрито.", show_alert=True)
         return
     await _admit_reception_user(query.bot, user_id)
     await query.answer("Повторну перевірку виконано.")

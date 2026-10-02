@@ -17,7 +17,8 @@ os.environ.setdefault("INVITE_CHAT_ID", "-100")
 os.environ.setdefault("ADMIN_LOG_CHAT_ID", "-200")
 os.environ.setdefault("FAMILY_CHAT_ID", "-300")
 
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.methods import GetChatMember
 from app.handlers import invite
 from app.services import db_scheduler
 
@@ -37,6 +38,23 @@ class CandidateRulesDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def _join(self, user_id=1, due=10_000):
         await db.upsert_candidate_on_join(user_id, -100, due)
         return await db.get_candidate(user_id, -100)
+
+    async def test_departure_closes_active_records_and_cancels_review(self):
+        with patch.object(invite, "INVITE_CHAT_ID", -100):
+            for status in ("candidate", "wait", "invited"):
+                await self._join()
+                await db.update_candidate_status(1, -100, status)
+                await db.schedule_task(task_type="invite_review_due", run_at=1, chat_id=-100, user_id=1)
+                await invite._close_departed_candidate(1)
+                self.assertEqual((await db.get_candidate(1, -100))["status"], "left")
+                async with aiosqlite.connect(self.db_path) as connection:
+                    row = await (await connection.execute(
+                        "SELECT COUNT(*) FROM scheduled_tasks WHERE task_type='invite_review_due' AND status='pending'"
+                    )).fetchone()
+                self.assertEqual(row[0], 0)
+            await db.update_candidate_status(1, -100, "accepted")
+            await invite._close_departed_candidate(1)
+            self.assertEqual((await db.get_candidate(1, -100))["status"], "accepted")
 
     async def test_join_starts_fresh_rules_session_without_changing_welcome_constant(
         self,
@@ -144,10 +162,22 @@ class CandidateRulesDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_member_is_not_a_failed_main_chat_check(self):
+        method = GetChatMember(chat_id=invite.MAIN_CHAT_ID, user_id=10)
+        for reason in ("user not found", "member not found", "user not participant"):
+            bot = SimpleNamespace(get_chat_member=AsyncMock(side_effect=TelegramBadRequest(method, reason)))
+            self.assertIs(await invite._is_main_member(bot, 10), False)
+        for reason in ("chat not found", "PARTICIPANT_ID_INVALID", "not enough rights"):
+            bot = SimpleNamespace(get_chat_member=AsyncMock(
+                side_effect=TelegramBadRequest(method, reason)
+            ))
+            self.assertIsNone(await invite._is_main_member(bot, 10))
+
     async def test_startup_reconciliation_closes_only_verified_members(self):
         bot = SimpleNamespace(send_message=AsyncMock())
         with (
             patch.object(invite, "list_active_candidate_ids", AsyncMock(return_value=[10, 20, 30])),
+            patch.object(invite, "_is_chat_member", AsyncMock(return_value=True)),
             patch.object(invite, "_is_main_member", AsyncMock(side_effect=[True, False, None])),
             patch.object(invite, "_stop_existing_candidate", AsyncMock()) as stop,
         ):
@@ -159,12 +189,75 @@ class CandidateRulesHandlerTests(unittest.IsolatedAsyncioTestCase):
         bot = SimpleNamespace(get_chat_member=AsyncMock(), send_message=AsyncMock())
         with (
             patch.object(db_scheduler, "get_candidate", AsyncMock(return_value={"status": "candidate"})),
+            patch.object(invite, "_is_chat_member", AsyncMock(return_value=True)),
             patch.object(invite, "_is_main_member", AsyncMock(return_value=True)),
             patch.object(invite, "_stop_existing_candidate", AsyncMock()) as stop,
         ):
             await db_scheduler._handle_invite_review_due(bot, {"user_id": 10, "chat_id": invite.INVITE_CHAT_ID})
         stop.assert_awaited_once_with(10)
         bot.send_message.assert_not_awaited()
+
+    async def test_startup_closes_departed_candidates_before_main_chat_probe(self):
+        method = GetChatMember(chat_id=invite.INVITE_CHAT_ID, user_id=10)
+        bot = SimpleNamespace(
+            get_chat_member=AsyncMock(side_effect=TelegramBadRequest(method, "member not found")),
+            send_message=AsyncMock(),
+        )
+        with (
+            patch.object(invite, "list_active_candidate_ids", AsyncMock(return_value=[10])),
+            patch.object(invite, "_close_departed_candidate", AsyncMock()) as close,
+            patch.object(invite, "_is_main_member", AsyncMock()) as main,
+        ):
+            await invite.reconcile_reception_candidates(bot)
+        close.assert_awaited_once_with(10)
+        main.assert_not_awaited()
+        self.assertIn("Вже вийшли", bot.send_message.await_args.args[1])
+
+    async def test_unknown_reception_error_preserves_candidate(self):
+        method = GetChatMember(chat_id=invite.INVITE_CHAT_ID, user_id=10)
+        bot = SimpleNamespace(
+            get_chat_member=AsyncMock(side_effect=TelegramBadRequest(method, "PARTICIPANT_ID_INVALID")),
+            send_message=AsyncMock(),
+        )
+        with (
+            patch.object(invite, "list_active_candidate_ids", AsyncMock(return_value=[10])),
+            patch.object(invite, "_close_departed_candidate", AsyncMock()) as close,
+            patch.object(invite, "_is_main_member", AsyncMock(return_value=False)),
+        ):
+            await invite.reconcile_reception_candidates(bot)
+        close.assert_not_awaited()
+        self.assertIn("Статус не змінено", bot.send_message.await_args.args[1])
+
+    async def test_due_review_closes_absent_candidate(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        with (
+            patch.object(db_scheduler, "get_candidate", AsyncMock(return_value={"status": "candidate"})),
+            patch.object(invite, "_is_chat_member", AsyncMock(return_value=False)),
+            patch.object(invite, "_is_main_member", AsyncMock()) as main,
+            patch.object(invite, "_close_departed_candidate", AsyncMock()) as close,
+        ):
+            await db_scheduler._handle_invite_review_due(bot, {"user_id": 10, "chat_id": invite.INVITE_CHAT_ID})
+        close.assert_awaited_once_with(10)
+        main.assert_not_awaited()
+        self.assertIsNone(bot.send_message.await_args.kwargs.get("reply_markup"))
+
+    async def test_leave_notification_closes_candidate(self):
+        message = SimpleNamespace(left_chat_member=SimpleNamespace(id=10))
+        with patch.object(invite, "_close_departed_candidate", AsyncMock()) as close:
+            await invite.on_candidate_leave_reception(message)
+        close.assert_awaited_once_with(10)
+
+    async def test_retry_closes_absent_candidate(self):
+        query = SimpleNamespace(from_user=SimpleNamespace(id=1), data="inv:retry:10", bot=object(), answer=AsyncMock())
+        with (
+            patch.object(invite, "get_admin_level", AsyncMock(return_value=2)),
+            patch.object(invite, "_is_chat_member", AsyncMock(return_value=False)),
+            patch.object(invite, "_close_departed_candidate", AsyncMock()) as close,
+            patch.object(invite, "_admit_reception_user", AsyncMock()) as admit,
+        ):
+            await invite.retry_reception_check(query)
+        close.assert_awaited_once_with(10)
+        admit.assert_not_awaited()
 
     async def test_existing_member_reentering_reception_never_becomes_candidate(self):
         bot = SimpleNamespace(
