@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import json
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
@@ -28,6 +29,7 @@ from app.services.birthday_reminders import (
     send_postponed_birthday_reminder,
 )
 from app.services.talktop import TALKTOP_DAILY_TASK, send_daily_talktop
+from app.services.clan_exit import EXIT_CLEANUP_TASK, EXIT_REMINDER_TASK, run_cleanup, run_reminder
 from app.services.event_jobs import (
     EVENT_AUTO_REMINDER_TASK,
     EVENT_DRAFT_CLEANUP_TASK,
@@ -153,6 +155,11 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
                 try:
                     if task["task_type"] == "invite_review_due":
                         await _handle_invite_review_due(bot, task)
+                    elif task["task_type"] == EXIT_CLEANUP_TASK:
+                        await run_cleanup(bot, int(task["payload_json"]))
+                    elif task["task_type"] == EXIT_REMINDER_TASK:
+                        payload = json.loads(task["payload_json"])
+                        await run_reminder(bot, int(payload["id"]), int(payload["number"]))
                     elif task["task_type"] == "tiktok_check":
                         await _handle_tiktok_check(bot)
                     elif task["task_type"] == BIRTHDAY_DAILY_TASK:
