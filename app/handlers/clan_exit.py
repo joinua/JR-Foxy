@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from aiogram import F, Router
@@ -16,29 +17,85 @@ from app.dao import clan_exit as dao
 from app.services import clan_exit as service
 
 router = Router()
+logger = logging.getLogger(__name__)
+ACTIONS = {"game", "contact", "explain", "unavailable", "refresh", "return", "later", "finish"}
 
 
 class Explanation(StatesGroup):
     text = State()
 
 
+async def _answer(query: CallbackQuery, text: str, *, show_alert: bool = False) -> None:
+    try:
+        await service.telegram_call(query.answer(text, show_alert=show_alert))
+    except Exception:
+        # An expired callback must not prevent an authorized action from finishing.
+        logger.exception("Cannot answer exit callback", extra={"callback_id": query.id})
+
+
+async def _notify(message: Message, text: str) -> None:
+    try:
+        await service.telegram_call(message.answer(text, parse_mode=None))
+    except Exception:
+        logger.exception("Cannot send exit action feedback")
+
+
 @router.callback_query(F.data.startswith("exit:"))
 async def exit_action(query: CallbackQuery, state: FSMContext) -> None:
     if not query.message or query.message.chat.id != ADMIN_LOG_CHAT_ID or not query.data:
-        await query.answer("Ця дія доступна лише в чаті адміністрації.", show_alert=True)
-        return
-    if not await has_admin_level(query.from_user.id, 2):
-        await query.answer("Потрібна роль адміністратора або вище.", show_alert=True)
+        await _answer(query, "Ця дія доступна лише в чаті адміністрації.", show_alert=True)
         return
     try:
-        _, action, raw_id = query.data.split(":", 2)
-        case = await dao.get(int(raw_id))
-    except (ValueError, TypeError):
-        await query.answer("Некоректна перевірка.", show_alert=True)
+        if not await has_admin_level(query.from_user.id, 2):
+            await _answer(query, "Потрібна роль адміністратора або вище.", show_alert=True)
+            return
+        try:
+            _, action, raw_id = query.data.split(":", 2)
+            check_id = int(raw_id)
+        except (ValueError, TypeError):
+            await _answer(query, "Некоректна перевірка.", show_alert=True)
+            return
+        if action not in ACTIONS:
+            await _answer(query, "Невідома дія.", show_alert=True)
+            return
+        case = await dao.get(check_id)
+        if (not case or case["message_id"] != query.message.message_id
+                or (case["status"] != "open" and action != "refresh")):
+            await _answer(query, "Ця картка вже неактивна.", show_alert=True)
+            return
+        if action == "unavailable" and (
+            not case["contact_at"] or time.time() - case["contact_at"] < service.EXPLANATION_WAIT_SECONDS
+        ):
+            await _answer(query, "Потрібен зафіксований запит і 24 години очікування.", show_alert=True)
+            return
+    except Exception:
+        logger.exception("Cannot load exit case", extra={"callback_data": query.data})
+        await _answer(query, "Не вдалося відкрити перевірку. Спробуй ще раз.", show_alert=True)
         return
-    if not case or case["status"] != "open" or case["message_id"] != query.message.message_id:
-        await query.answer("Ця картка вже неактивна.", show_alert=True)
-        return
+
+    # Acknowledge exactly once, before DB writes, FSM changes or Telegram checks.
+    prompt = "Надішли короткий виклад пояснення сюди, у чат адміністрації."
+    await _answer(
+        query,
+        prompt if action == "explain" else (
+            "Перевіряю…" if action in {"refresh", "return", "finish"} else "Обробляю…"
+        ),
+        show_alert=action == "explain",
+    )
+    try:
+        await _apply_action(query, state, action, case)
+    except service.CardPublishError:
+        logger.exception("Cannot update exit card", extra={"case_id": check_id, "action": action})
+        await _notify(query.message,
+                      f"⚠️ Перевірка #{check_id}: дані збережено, але картку не вдалося оновити. "
+                      "Натисни «Перевірити чати», щоб повторити оновлення.")
+    except Exception:
+        logger.exception("Exit action failed", extra={"case_id": check_id, "action": action})
+        await _notify(query.message,
+                      f"⚠️ Не вдалося завершити дію для перевірки #{check_id}. Спробуй ще раз.")
+
+
+async def _apply_action(query: CallbackQuery, state: FSMContext, action: str, case: dict) -> None:
     check_id = case["id"]
     actor = query.from_user.id
     if action == "game":
@@ -49,52 +106,42 @@ async def exit_action(query: CallbackQuery, state: FSMContext) -> None:
     elif action == "explain":
         await state.set_state(Explanation.text)
         await state.update_data(exit_check_id=check_id)
-        await query.answer("Надішли короткий виклад пояснення сюди, у чат адміністрації.", show_alert=True)
         return
     elif action == "unavailable":
-        if not case["contact_at"] or time.time() - case["contact_at"] < service.EXPLANATION_WAIT_SECONDS:
-            await query.answer("Потрібен зафіксований запит і 24 години очікування.", show_alert=True)
-            return
         await dao.change(check_id, actor, "explanation_unavailable",
                          explanation_status="unavailable", explanation_by=actor,
                          explanation_at=int(time.time()), explanation_text=None)
     elif action == "refresh":
-        updated = await service.refresh_chats(query.bot, case, remove=True)
-        await query.answer("Перевірено." if updated != case else "Головний чат зараз недоступний для перевірки.")
+        if case["status"] != "open":
+            # A completed action may have persisted while its Telegram edit failed.
+            await service.publish(query.bot, case)
+            return
+        await service.refresh_chats(query.bot, case, remove=True, actor_id=actor)
         return
     elif action == "return":
         if not await service.mark_returned(query.bot, case, actor):
-            await query.answer("Повернення в головний чат не підтверджено.", show_alert=True)
-        else:
-            await query.answer("Повернення підтверджено.")
+            await _notify(query.message, f"Перевірка #{check_id}: повернення в головний чат не підтверджено.")
         return
     elif action == "later":
         await dao.change(check_id, actor, "postponed", chat_states=case["chat_states"])
-        await query.answer("Перевірка лишається відкритою. Нагадування надійде через добу.")
-        return
     elif action == "finish":
-        if await service.mark_returned(query.bot, case, actor):
-            await query.answer("Гравець повернувся. Перевірку закрито як повернення.", show_alert=True)
+        case = await service.refresh_chats(query.bot, case, remove=False, actor_id=actor)
+        if case["status"] != "open":
             return
-        if await service.main_member(query.bot, case["user_id"]) is None:
-            await query.answer("Не вдалося перевірити головний чат.", show_alert=True)
-            return
-        case = await service.refresh_chats(query.bot, case, remove=False)
-        if (case["status"] != "open" or not case["game_at"]
+        states = json.loads(case["chat_states"])
+        if (states.get(str(service.MAIN_CHAT_ID)) != "немає" or not case["game_at"]
             or case["explanation_status"] not in {"explained", "unavailable"}
-            or not all(json.loads(case["chat_states"]).get(str(chat_id)) == "немає"
-                       for chat_id in service.OTHER_CHATS)):
-            await query.answer("Є незавершені кроки. Картку оновлено.", show_alert=True)
+            or not all(states.get(str(chat_id)) == "немає" for chat_id in service.OTHER_CHATS)):
+            await _notify(query.message, f"Перевірка #{check_id}: є незавершені кроки. Картку оновлено.")
             return
         await dao.change(check_id, actor, "closed", status="closed",
                          closed_by=actor, closed_at=int(time.time()))
-    else:
-        await query.answer("Невідома дія.", show_alert=True)
-        return
     updated = await dao.get(check_id)
     if updated:
         await service.publish(query.bot, updated)
-    await query.answer("Збережено.")
+    if action == "later":
+        await _notify(query.message,
+                      f"Перевірка #{check_id} лишається відкритою. Нагадування надійде за розкладом.")
 
 
 @router.message(Explanation.text, F.chat.id == ADMIN_LOG_CHAT_ID)
@@ -106,16 +153,22 @@ async def record_explanation(message: Message, state: FSMContext) -> None:
         return
     if not case or case["status"] != "open":
         await state.clear()
-        await message.answer("Перевірка вже закрита.")
+        await _notify(message, "Перевірка вже закрита.")
         return
     summary = (message.text or "").strip()
     if not summary or summary.startswith("/") or len(summary) > 500:
-        await message.answer("Надішли короткий текст пояснення (до 500 символів).")
+        await _notify(message, "Надішли короткий текст пояснення (до 500 символів).")
         return
     actor = message.from_user.id
     await dao.change(case["id"], actor, "explanation_recorded",
                      explanation_status="explained", explanation_text=summary,
                      explanation_by=actor, explanation_at=int(time.time()))
     await state.clear()
-    await service.publish(message.bot, await dao.get(case["id"]))
-    await message.answer("Пояснення записано в картці перевірки.")
+    try:
+        await service.publish(message.bot, await dao.get(case["id"]))
+    except service.CardPublishError:
+        logger.exception("Cannot publish recorded explanation", extra={"case_id": case["id"]})
+        await _notify(message, f"⚠️ Пояснення для перевірки #{case['id']} збережено, "
+                      "але картку не вдалося оновити. Натисни «Перевірити чати».")
+        return
+    await _notify(message, "Пояснення записано в картці перевірки.")

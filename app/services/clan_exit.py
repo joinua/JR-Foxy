@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -25,6 +26,16 @@ KYIV = ZoneInfo("Europe/Kyiv")
 EXIT_CLEANUP_TASK = "clan_exit_cleanup"
 EXIT_REMINDER_TASK = "clan_exit_reminder"
 EXPLANATION_WAIT_SECONDS = 24 * 60 * 60
+TELEGRAM_TIMEOUT_SECONDS = 10
+CHECK_FAILED = "не вдалося перевірити — вручну"
+
+
+class CardPublishError(RuntimeError):
+    """The persisted case could not be displayed in Telegram."""
+
+
+async def telegram_call(operation):
+    return await asyncio.wait_for(operation, timeout=TELEGRAM_TIMEOUT_SECONDS)
 
 OTHER_CHATS = {
     FAMILY_CHAT_ID: "Родина",
@@ -37,10 +48,14 @@ OTHER_CHATS.pop(MAIN_CHAT_ID, None)
 
 async def main_member(bot, user_id: int) -> bool | None:
     try:
-        member = await bot.get_chat_member(MAIN_CHAT_ID, user_id)
+        member = await telegram_call(bot.get_chat_member(MAIN_CHAT_ID, user_id))
     except Exception:
         logger.exception("Cannot verify main chat membership", extra={"user_id": user_id})
         return None
+    return _is_member(member)
+
+
+def _is_member(member) -> bool:
     return member.status in {"member", "administrator", "creator"} or (
         member.status == "restricted" and bool(getattr(member, "is_member", False))
     )
@@ -93,6 +108,8 @@ def card(case: dict) -> str:
         f"<b>У грі:</b> {game}",
         f"<b>Власне пояснення виходу:</b> {explanation}",
     ]
+    if states.get(str(MAIN_CHAT_ID)) == CHECK_FAILED:
+        lines.append("⚠️ Головний чат недоступний для перевірки; автоматичне вилучення призупинено.")
     if case["explanation_text"]:
         lines.append(f"<b>Короткий виклад:</b> {escape(case['explanation_text'])}")
     if status == "closed":
@@ -124,19 +141,21 @@ def keyboard(case: dict) -> InlineKeyboardMarkup | None:
 
 
 async def publish(bot, case: dict) -> None:
-    if case["message_id"]:
-        try:
-            await bot.edit_message_text(
-                card(case), ADMIN_LOG_CHAT_ID, case["message_id"],
+    try:
+        if case["message_id"]:
+            await telegram_call(bot.edit_message_text(
+                text=card(case), chat_id=ADMIN_LOG_CHAT_ID, message_id=case["message_id"],
                 parse_mode="HTML", reply_markup=keyboard(case),
-            )
-        except TelegramBadRequest as exc:
-            if "message is not modified" not in str(exc).lower():
-                raise
-        return
-    message = await bot.send_message(
-        ADMIN_LOG_CHAT_ID, card(case), parse_mode="HTML", reply_markup=keyboard(case),
-    )
+            ))
+            return
+        message = await telegram_call(bot.send_message(
+            chat_id=ADMIN_LOG_CHAT_ID, text=card(case), parse_mode="HTML", reply_markup=keyboard(case),
+        ))
+    except Exception as exc:
+        if (case["message_id"] and isinstance(exc, TelegramBadRequest)
+                and "message is not modified" in str(exc).lower()):
+            return
+        raise CardPublishError(f"Cannot publish exit card #{case['id']}") from exc
     await dao.attach_message(case["id"], message.message_id)
 
 
@@ -164,43 +183,46 @@ async def record_exit(bot, user, kind: str, profile: dict | None) -> None:
 async def mark_returned(bot, case: dict, actor_id: int | None = None) -> bool:
     if await main_member(bot, case["user_id"]) is not True:
         return False
+    return await _record_returned(bot, case, actor_id)
+
+
+async def _record_returned(bot, case: dict, actor_id: int | None = None) -> bool:
     await dao.change(case["id"], actor_id, "returned", status="returned",
                      closed_by=actor_id, closed_at=int(time.time()))
-    await publish(bot, await dao.get(case["id"]))
-    return True
+    updated = await dao.get(case["id"])
+    await publish(bot, updated)
+    return updated["status"] == "returned"
 
 
-async def refresh_chats(bot, case: dict, *, remove: bool) -> dict:
-    if await mark_returned(bot, case):
-        return await dao.get(case["id"])
+async def refresh_chats(bot, case: dict, *, remove: bool, actor_id: int | None = None) -> dict:
     membership = await main_member(bot, case["user_id"])
+    if membership is True:
+        await _record_returned(bot, case, actor_id)
+        return await dao.get(case["id"])
     if membership is None:
-        # Keep previous observations, but do not remove anybody without a confirmed exit.
-        return case
-    states = {}
-    for chat_id in OTHER_CHATS:
+        # Stale observations must not permit closure or removal without a confirmed exit.
+        states = {str(chat_id): CHECK_FAILED for chat_id in (MAIN_CHAT_ID, *OTHER_CHATS)}
+    else:
+        states = {str(MAIN_CHAT_ID): "немає"}
+    for chat_id in OTHER_CHATS if membership is False else ():
         try:
-            member = await bot.get_chat_member(chat_id, case["user_id"])
+            member = await telegram_call(bot.get_chat_member(chat_id, case["user_id"]))
             status = member.status
-            if status in {"left", "kicked"} or (
-                status == "restricted" and not getattr(member, "is_member", False)
-            ):
+            if not _is_member(member):
                 states[str(chat_id)] = "немає"
             elif status in {"administrator", "creator"} or case["user_id"] == BOT_OWNER_ID:
                 states[str(chat_id)] = "адміністратор — вилучити вручну"
             elif remove:
                 # unbanChatMember also removes a current member and permits later rejoining.
-                if await main_member(bot, case["user_id"]) is not False:
-                    return case
-                await bot.unban_chat_member(chat_id, case["user_id"])
-                confirmed = await bot.get_chat_member(chat_id, case["user_id"])
-                states[str(chat_id)] = "немає" if confirmed.status in {"left", "kicked"} else "вилучення не підтверджено"
+                await telegram_call(bot.unban_chat_member(chat_id, case["user_id"]))
+                confirmed = await telegram_call(bot.get_chat_member(chat_id, case["user_id"]))
+                states[str(chat_id)] = "немає" if not _is_member(confirmed) else "вилучення не підтверджено"
             else:
                 states[str(chat_id)] = "присутній"
         except Exception:
             logger.exception("Exit chat check failed", extra={"case_id": case["id"], "chat_id": chat_id})
-            states[str(chat_id)] = "не вдалося перевірити — вручну"
-    await dao.change(case["id"], None, "chats_checked", chat_states=json.dumps(states, ensure_ascii=False))
+            states[str(chat_id)] = CHECK_FAILED
+    await dao.change(case["id"], actor_id, "chats_checked", chat_states=json.dumps(states, ensure_ascii=False))
     updated = await dao.get(case["id"])
     await publish(bot, updated)
     return updated
@@ -217,10 +239,10 @@ async def run_reminder(bot, check_id: int, number: int) -> None:
     if not case or case["status"] != "open":
         return
     await publish(bot, case)  # Reveal the no-response action after the waiting period.
-    await bot.send_message(
+    await telegram_call(bot.send_message(
         ADMIN_LOG_CHAT_ID,
         f"⏳ Перевірка виходу #{check_id} досі відкрита: {escape(case['nickname'] or case['telegram_name'])}.",
-    )
+    ))
     await schedule_task(
         EXIT_REMINDER_TASK, int(time.time()) + 86400, user_id=case["user_id"],
         payload_json=json.dumps({"id": check_id, "number": number + 1}),
