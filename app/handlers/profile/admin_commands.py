@@ -176,7 +176,7 @@ def _audit_display_name(row: dict) -> str:
 
 
 def _render_profile_audit(
-    rows: list[dict], *, total_members: int, completed_profiles: int
+    rows: list[dict], *, total_members: int, completed_profiles: int, verified_members: int | None = None
 ) -> str:
     number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
     visible_rows = rows[:5]
@@ -201,6 +201,7 @@ def _render_profile_audit(
             "",
             f"Всього в клані: <b>{pluralize(total_members, 'учасник', 'учасники', 'учасників')}</b>",
             f"Заповнені профілі з них у: <b>{pluralize(completed_profiles, 'учасника', 'учасників', 'учасників')}</b>",
+            f"🔎 Перевірено профілів: <b>{verified_members if verified_members is not None else completed_profiles + len(rows)}</b>",
             "",
             (
                 "Прохання Офіцерам клану допомогти учасникам заповнити вище "
@@ -209,6 +210,17 @@ def _render_profile_audit(
             ),
         ]
     )
+    if verified_members is not None and total_members != verified_members:
+        difference = total_members - verified_members
+        if difference > 0:
+            lines.extend([
+                f"⚠️ Не зіставлено з профілями: <b>{difference}</b>.",
+                "Це можуть бути невідомі боту учасники або інші боти. Потрібна звірка головного чату.",
+            ])
+        else:
+            lines.append(
+                f"⚠️ Перевірених профілів більше за лічильник Telegram на <b>{-difference}</b>."
+            )
     return "\n".join(lines)
 
 
@@ -317,6 +329,7 @@ async def profile_audit_handler(message: Message) -> None:
         audit_rows,
         total_members=total_members,
         completed_profiles=completed_profiles,
+        verified_members=len(rows),
     )
 
     try:
