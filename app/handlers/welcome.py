@@ -16,6 +16,7 @@ from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID, RULES_URL
 from app.handlers.invite import cleanup_candidate_after_main_join
 from app.services import profile_service
 from app.services import clan_exit
+from app.services.member_tracking import observe_main_member
 from app.dao import clan_exit as clan_exit_dao
 from app.core.db import (
     RULES_URL_KEY,
@@ -45,6 +46,7 @@ async def _register_main_member(bot, user, joined_at: int) -> None:
     # Restores a returned member's role before updating the Telegram identity.
     await profile_service.reactivate_profile(user.id)
     await profile_service.sync_telegram_user(user, create=True)
+    await observe_main_member(user.id)
     previous_exit = await clan_exit_dao.get_open_for_user(user.id)
     if previous_exit:
         await clan_exit.mark_returned(bot, previous_exit)
