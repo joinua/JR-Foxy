@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import aiosqlite
+
 os.environ.setdefault("BOT_TOKEN", "123:test")
 os.environ.setdefault("BOT_OWNER_ID", "1")
 os.environ.setdefault("INVITE_CHAT_ID", "-100")
@@ -64,6 +66,26 @@ class MemberReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.bot.get_chat_member.side_effect = RuntimeError("PARTICIPANT_ID_INVALID")
         await member_tracking.reconcile_members(self.bot)
         self.assertEqual((await profile_service.get_profile(44))["status"], "active")
+
+    async def test_reception_departure_stays_out_of_audit_until_main_chat_verified(self):
+        await db.upsert_call_member(
+            user_id=77, username="reception", first_name="Applicant",
+            last_name=None, last_seen=1,
+        )
+        async with aiosqlite.connect(db.DB_PATH) as conn:
+            await conn.execute(
+                """INSERT INTO candidates (
+                    user_id, reception_chat_id, status, created_at, review_due_at
+                ) VALUES (?, ?, ?, ?, ?)""",
+                (77, -100, "left", 1, 1),
+            )
+            await conn.commit()
+        rows = await profile_dao.list_profiles_for_audit()
+        self.assertNotIn(77, [row["user_id"] for row in rows])
+
+        await member_tracking.observe_main_member(77)
+        rows = await profile_dao.list_profiles_for_audit()
+        self.assertIn(77, [row["user_id"] for row in rows])
 
     async def test_verified_join_is_added_to_observed_roster(self):
         await db.ensure_clan_member(45, 100)
