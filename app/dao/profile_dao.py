@@ -277,9 +277,16 @@ async def list_profiles_for_audit() -> list[dict]:
                   AND archived_at IS NULL
                   AND deleted_at IS NULL
                 UNION
-                SELECT user_id
-                FROM call_members
-                WHERE is_enabled = 1
+                SELECT user_id FROM main_chat_observed
+                UNION
+                SELECT cm.user_id
+                FROM call_members cm
+                WHERE cm.is_enabled = 1
+                  AND NOT EXISTS (
+                    SELECT 1 FROM candidates c
+                    WHERE c.user_id = cm.user_id
+                      AND c.status IN ('left', 'kicked')
+                  )
             )
             SELECT
                 ku.user_id,
