@@ -48,6 +48,41 @@ async def ensure_schema(db: aiosqlite.Connection) -> None:
     """)
 
 
+async def actor_labels(user_ids: set[int]) -> dict[int, str]:
+    """Resolve reviewer names from local Telegram snapshots (no Bot API wait)."""
+    if not user_ids:
+        return {}
+    labels = {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        for user_id in user_ids:
+            row = await (await db.execute(
+                """SELECT p.telegram_full_name, p.telegram_username,
+                          a.first_name AS admin_first, a.last_name AS admin_last,
+                          a.username AS admin_username,
+                          c.first_name AS call_first, c.last_name AS call_last,
+                          c.username AS call_username
+                   FROM (SELECT ? AS user_id) v
+                   LEFT JOIN profiles p ON p.user_id=v.user_id
+                   LEFT JOIN admins a ON a.user_id=v.user_id
+                   LEFT JOIN call_members c ON c.user_id=v.user_id""",
+                (user_id,),
+            )).fetchone()
+            if not row:
+                continue
+            name = (
+                row["telegram_full_name"]
+                or " ".join(x for x in (row["admin_first"], row["admin_last"]) if x)
+                or " ".join(x for x in (row["call_first"], row["call_last"]) if x)
+                or (f"@{row['telegram_username']}" if row["telegram_username"] else "")
+                or (f"@{row['admin_username']}" if row["admin_username"] else "")
+                or (f"@{row['call_username']}" if row["call_username"] else "")
+            )
+            if name:
+                labels[user_id] = name
+    return labels
+
+
 async def get(check_id: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
