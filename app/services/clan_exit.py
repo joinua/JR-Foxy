@@ -76,7 +76,15 @@ def _duration(case: dict) -> str:
         return "дату вступу потрібно перевірити"
 
 
-def card(case: dict) -> str:
+def _actor_mention(user_id: int | None, names: dict[int, str] | None = None) -> str:
+    """A clickable reviewer name, never a raw numeric Telegram ID."""
+    if user_id is None:
+        return "невідомо"
+    label = (names or {}).get(int(user_id)) or "адміністратор"
+    return f'<a href="tg://user?id={int(user_id)}">{escape(label)}</a>'
+
+
+def card(case: dict, actor_names: dict[int, str] | None = None) -> str:
     status = case["status"]
     heading = {
         "open": "🚪 Помічено вихід з клану",
@@ -84,9 +92,9 @@ def card(case: dict) -> str:
         "closed": "✅ Вихід з клану перевірено",
     }[status]
     states = json.loads(case["chat_states"])
-    chat_lines = "; ".join(
-        f"{name} — {escape(states.get(str(chat_id), 'очікує перевірки'))}"
-        for chat_id, name in OTHER_CHATS.items()
+    game = (
+        f"вилучено · підтвердив {_actor_mention(case['game_by'], actor_names)} · {_date(case['game_at'])}"
+        if case["game_at"] else "очікує перевірки"
     )
     explanation = {
         "not_requested": "не запитували",
@@ -94,28 +102,43 @@ def card(case: dict) -> str:
         "explained": f"пояснено · {_date(case['explanation_at'])}",
         "unavailable": f"пояснення не отримано · {_date(case['explanation_at'])}",
     }[case["explanation_status"]]
-    game = (
-        f"вилучено · підтвердив {case['game_by']} · {_date(case['game_at'])}"
-        if case["game_at"] else "очікує перевірки"
-    )
+    if case["explanation_by"] and case["explanation_status"] in {"explained", "unavailable"}:
+        explanation += f" · зазначив {_actor_mention(case['explanation_by'], actor_names)}"
+
     label = escape(case["nickname"] or case["telegram_name"] or str(case["user_id"]))
     lines = [
         f"<b>{heading}</b>",
-        f"<b>Гравець:</b> {label} · <a href=\"tg://user?id={case['user_id']}\">профіль Telegram</a>",
-        f"<b>Причина виходу з чату:</b> {escape(case['departure_kind'])}",
-        f"<b>У клані:</b> {_duration(case)}",
-        f"<b>Інші чати:</b> {chat_lines}",
-        f"<b>У грі:</b> {game}",
-        f"<b>Власне пояснення виходу:</b> {explanation}",
+        f"🎮 <b>Гравець:</b> {label} · <a href=\"tg://user?id={case['user_id']}\">профіль Telegram</a>",
+        f"🚪 <b>Причина виходу з чату:</b> {escape(case['departure_kind'])}",
+        f"📅 <b>У клані:</b> {_duration(case)}",
     ]
+    if status == "closed" and all(
+        states.get(str(chat_id)) == "немає" for chat_id in OTHER_CHATS
+    ):
+        lines.append("👥 <b>У чатах сімейства JR — немає.</b>")
+    else:
+        lines.append("👥 <b>У чатах сімейства JR:</b>")
+        for chat_id, name in OTHER_CHATS.items():
+            value = states.get(str(chat_id), "очікує перевірки")
+            indicator = "✅" if value == "немає" else ("⚠️" if value == CHECK_FAILED else "🔸")
+            lines.append(f"  {indicator} {escape(name)} — {escape(value)}")
+
+    lines.extend([
+        f"🕹️ <b>У грі:</b> {game}",
+        f"💬 <b>Власне пояснення виходу:</b> {explanation}",
+    ])
     if states.get(str(MAIN_CHAT_ID)) == CHECK_FAILED:
         lines.append("⚠️ Головний чат недоступний для перевірки; автоматичне вилучення призупинено.")
     if case["explanation_text"]:
-        lines.append(f"<b>Короткий виклад:</b> {escape(case['explanation_text'])}")
+        lines.append(f"📝 <b>Короткий виклад:</b> {escape(case['explanation_text'])}")
     if status == "closed":
-        lines.append(f"<b>Підсумок:</b> учасник вийшов із клану; перевірку завершив {case['closed_by']} · {_date(case['closed_at'])}")
+        lines.append(
+            "✅ <b>Підсумок:</b> учасник вийшов із клану; "
+            f"перевірку завершив {_actor_mention(case['closed_by'], actor_names)} "
+            f"· {_date(case['closed_at'])}"
+        )
     elif status == "returned":
-        lines.append("<b>Підсумок:</b> повернення підтверджено в головному чаті; перевірку закрито.")
+        lines.append("↩️ <b>Підсумок:</b> повернення підтверджено в головному чаті; перевірку закрито.")
     return "\n".join(lines)
 
 
@@ -141,15 +164,20 @@ def keyboard(case: dict) -> InlineKeyboardMarkup | None:
 
 
 async def publish(bot, case: dict) -> None:
+    reviewers = {
+        int(case[field]) for field in ("game_by", "explanation_by", "contact_by", "closed_by")
+        if case.get(field) is not None
+    }
+    actor_names = await dao.actor_labels(reviewers)
     try:
         if case["message_id"]:
             await telegram_call(bot.edit_message_text(
-                text=card(case), chat_id=ADMIN_LOG_CHAT_ID, message_id=case["message_id"],
+                text=card(case, actor_names), chat_id=ADMIN_LOG_CHAT_ID, message_id=case["message_id"],
                 parse_mode="HTML", reply_markup=keyboard(case),
             ))
             return
         message = await telegram_call(bot.send_message(
-            chat_id=ADMIN_LOG_CHAT_ID, text=card(case), parse_mode="HTML", reply_markup=keyboard(case),
+            chat_id=ADMIN_LOG_CHAT_ID, text=card(case, actor_names), parse_mode="HTML", reply_markup=keyboard(case),
         ))
     except Exception as exc:
         if (case["message_id"] and isinstance(exc, TelegramBadRequest)
