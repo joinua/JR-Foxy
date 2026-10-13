@@ -83,12 +83,12 @@ def setup_routers() -> None:
 async def run_membership_recovery() -> None:
     """Recover skipped membership updates and unpublished exit cards."""
     while True:
-        await asyncio.sleep(900)
         try:
             await reconcile_members(bot)
             await recover_open_cards(bot)
         except Exception:
             logger.exception("Background membership recovery failed")
+        await asyncio.sleep(900)
 
 
 async def run_health_heartbeat() -> None:
@@ -115,7 +115,6 @@ async def main() -> None:
     me = await bot.get_me()
     await reconcile_reception_candidates(bot)
     await recover_open_cards(bot)
-    await reconcile_members(bot)
     await recover_birthday_cards(bot)
     await bot.set_my_commands(PUBLIC_COMMANDS)
     HEALTH_FILE.touch()
