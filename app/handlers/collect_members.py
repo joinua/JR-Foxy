@@ -4,6 +4,8 @@ from aiogram import F, Router
 from aiogram.types import Message
 
 from app.core.db import upsert_call_member
+from app.core.config import MAIN_CHAT_ID
+from app.services.member_tracking import observe_main_member
 from app.services.profile_service import sync_telegram_user
 
 router = Router()
@@ -25,4 +27,6 @@ async def collect_member(message: Message) -> None:
         last_name=user.last_name,
         last_seen=int(time.time()),
     )
-    await sync_telegram_user(user, create=False)
+    await sync_telegram_user(user, create=message.chat.id == MAIN_CHAT_ID)
+    if message.chat.id == MAIN_CHAT_ID:
+        await observe_main_member(user.id)

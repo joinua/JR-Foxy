@@ -172,6 +172,10 @@ async def init_db() -> None:
                 user_id INTEGER PRIMARY KEY,
                 first_joined_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS main_chat_observed (
+                user_id INTEGER PRIMARY KEY,
+                last_confirmed_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS chat_settings (
                 chat_id     INTEGER NOT NULL,
                 key         TEXT NOT NULL,

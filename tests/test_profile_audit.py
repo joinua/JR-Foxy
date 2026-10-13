@@ -52,6 +52,14 @@ class ProfileAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Всього в клані: <b>4 учасники</b>", text)
         self.assertIn("Заповнені профілі з них у: <b>4 учасників</b>", text)
 
+    def test_unaccounted_telegram_members_are_flagged_not_implicitly_complete(self):
+        text = admin_commands._render_profile_audit(
+            [], total_members=40, completed_profiles=35, verified_members=38
+        )
+        self.assertIn("Не зіставлено з профілями: <b>2</b>", text)
+        self.assertIn("Перевірено профілів: <b>38</b>", text)
+        self.assertIn("інші боти", text)
+
     async def test_handler_counts_filled_profiles_and_excludes_foxy(self):
         complete = {
             "user_id": 20,

@@ -58,6 +58,25 @@ class ClanExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(states["-400"], "адміністратор — вилучити вручну")
         bot.unban_chat_member.assert_awaited_once_with(-300, 42)
 
+    async def test_completed_card_shows_named_reviewer_and_family_summary(self):
+        case, _ = await dao.create(87, "вийшов сам", "JRঐTest", "Tester", None)
+        states = {str(chat_id): "немає" for chat_id in service.OTHER_CHATS}
+        case.update({
+            "status": "closed",
+            "game_by": 2,
+            "game_at": 1000,
+            "closed_by": 3,
+            "closed_at": 2000,
+            "chat_states": json.dumps(states),
+        })
+        rendered = service.card(case, {2: "Юлія", 3: "Монах"})
+        self.assertIn("У чатах сімейства JR — немає.", rendered)
+        self.assertIn('<a href="tg://user?id=2">Юлія</a>', rendered)
+        self.assertIn('<a href="tg://user?id=3">Монах</a>', rendered)
+        self.assertNotIn("підтвердив 2", rendered)
+        self.assertNotIn("перевірку завершив 3", rendered)
+        self.assertIn("🕹️", rendered)
+
     async def test_no_response_requires_documented_contact_and_wait(self):
         case, _ = await dao.create(42, "вийшов сам", "JRঐTest", "Name", None)
         self.assertNotIn("Пояснення не отримано", str(service.keyboard(case)))
@@ -137,7 +156,7 @@ class ClanExitCallbackTests(unittest.IsolatedAsyncioTestCase):
         updated = await self.action("game")
         self.assertEqual(updated["game_by"], 2)
         self.assertGreater(updated["game_at"], 0)
-        self.assertIn("вилучено · підтвердив 2", self.bot.edit_message_text.await_args.kwargs["text"])
+        self.assertIn('підтвердив <a href="tg://user?id=2">адміністратор</a>', self.bot.edit_message_text.await_args.kwargs["text"])
 
     async def test_publish_failure_reports_saved_contact_without_losing_data(self):
         self.bot.edit_message_text.side_effect = RuntimeError("Telegram unavailable")

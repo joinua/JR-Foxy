@@ -4,6 +4,7 @@ import time
 import logging
 
 from aiogram import F, Router
+from aiogram.types import ChatMemberUpdated
 from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardButton,
@@ -15,6 +16,7 @@ from app.core.config import BOT_OWNER_ID, MAIN_CHAT_ID, RULES_URL
 from app.handlers.invite import cleanup_candidate_after_main_join
 from app.services import profile_service
 from app.services import clan_exit
+from app.services.member_tracking import observe_main_member
 from app.dao import clan_exit as clan_exit_dao
 from app.core.db import (
     RULES_URL_KEY,
@@ -28,6 +30,59 @@ from app.core.db import (
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+def _is_current_member(member) -> bool:
+    status = getattr(member.status, "value", member.status)
+    return status in {"member", "administrator", "creator"} or (
+        status == "restricted" and bool(getattr(member, "is_member", False))
+    )
+
+
+async def _register_main_member(bot, user, joined_at: int) -> None:
+    if user.is_bot:
+        return
+    await ensure_clan_member(user.id, joined_at)
+    # Restores a returned member's role before updating the Telegram identity.
+    await profile_service.reactivate_profile(user.id)
+    await profile_service.sync_telegram_user(user, create=True)
+    await observe_main_member(user.id)
+    previous_exit = await clan_exit_dao.get_open_for_user(user.id)
+    if previous_exit:
+        await clan_exit.mark_returned(bot, previous_exit)
+
+
+async def _process_main_departure(bot, user, kind: str) -> None:
+    if user.is_bot:
+        return
+    logger.info("Main chat departure: user_id=%s kind=%s", user.id, kind)
+    profile = await profile_service.fill_missing_join_date(user.id)
+    await profile_service.archive_profile(user.id)
+    await clan_exit.record_exit(bot, user, kind, profile)
+
+
+@router.chat_member(F.chat.id == MAIN_CHAT_ID)
+async def on_main_membership_changed(event: ChatMemberUpdated) -> None:
+    """Track join/leave transitions even without service messages."""
+    was_member = _is_current_member(event.old_chat_member)
+    is_member = _is_current_member(event.new_chat_member)
+    if was_member == is_member:
+        return
+    user = event.new_chat_member.user
+    if user.is_bot:
+        return
+    if is_member:
+        await _register_main_member(event.bot, user, int(event.date.timestamp()))
+        logger.info("Main chat join: user_id=%s source=chat_member", user.id)
+    else:
+        actor = event.from_user
+        kind = (
+            "вийшов сам" if actor and actor.id == user.id
+            else "вилучений адміністратором" if actor and not actor.is_bot
+            else "спосіб виходу не встановлено"
+        )
+        await _process_main_departure(event.bot, user, kind)
+
 
 
 def mention_html(user) -> str:
@@ -68,11 +123,7 @@ async def on_new_members(message: Message):
 
     for user in message.new_chat_members:
         # 1) фіксуємо дату першого входу та повертаємо профіль після повторного вступу
-        await ensure_clan_member(user.id, joined_at)
-        await profile_service.reactivate_profile(user.id)
-        open_exit = await clan_exit_dao.get_open_for_user(user.id)
-        if open_exit:
-            await clan_exit.mark_returned(message.bot, open_exit)
+        await _register_main_member(message.bot, user, joined_at)
 
         # 2) вітання + кнопка з посиланням
         custom = await get_chat_setting(MAIN_CHAT_ID, WELCOME_HTML_KEY)
@@ -95,13 +146,11 @@ async def archive_left_member_profile(message: Message) -> None:
     user = message.left_chat_member
     if not user or user.is_bot:
         return
-    profile = await profile_service.fill_missing_join_date(user.id)
-    await profile_service.archive_profile(user.id)
     actor = message.from_user
     kind = "вийшов сам" if actor and actor.id == user.id else (
-        "вилучений адміністратором" if actor and not actor.is_bot else "не вдалося визначити"
+        "вилучений адміністратором" if actor and not actor.is_bot else "спосіб виходу не встановлено"
     )
-    await clan_exit.record_exit(message.bot, user, kind, profile)
+    await _process_main_departure(message.bot, user, kind)
 
 
 @router.message(F.chat.id == MAIN_CHAT_ID, Command("setwelcome"))
