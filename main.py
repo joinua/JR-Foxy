@@ -31,6 +31,7 @@ from app.handlers.talktop import router as talktop_router
 from app.handlers.events import router as events_router
 from app.services.event_service import reconcile_startup as reconcile_events_startup
 from app.services.clan_exit import recover_open_cards
+from app.services.member_tracking import reconcile_members
 from app.services.birthday_greetings import recover_cards as recover_birthday_cards
 from app.services.event_jobs import register_event_draft_cleanup_task
 from app.services.silence import run_silence_scheduler
@@ -79,6 +80,17 @@ def setup_routers() -> None:
     logger.info("routers registered", extra={"count": len(ROUTERS)})
 
 
+async def run_membership_recovery() -> None:
+    """Recover skipped membership updates and unpublished exit cards."""
+    while True:
+        await asyncio.sleep(900)
+        try:
+            await reconcile_members(bot)
+            await recover_open_cards(bot)
+        except Exception:
+            logger.exception("Background membership recovery failed")
+
+
 async def run_health_heartbeat() -> None:
     while True:
         HEALTH_FILE.touch()
@@ -103,6 +115,7 @@ async def main() -> None:
     me = await bot.get_me()
     await reconcile_reception_candidates(bot)
     await recover_open_cards(bot)
+    await reconcile_members(bot)
     await recover_birthday_cards(bot)
     await bot.set_my_commands(PUBLIC_COMMANDS)
     HEALTH_FILE.touch()
@@ -118,12 +131,14 @@ async def main() -> None:
     health_task = asyncio.create_task(run_health_heartbeat())
     silence_task = asyncio.create_task(run_silence_scheduler(bot))
     db_sched_task = asyncio.create_task(run_db_scheduler(bot))
+    membership_task = asyncio.create_task(run_membership_recovery())
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         health_task.cancel()
         silence_task.cancel()
         db_sched_task.cancel()
+        membership_task.cancel()
 
 
 if __name__ == "__main__":
