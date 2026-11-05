@@ -156,7 +156,12 @@ async def run_db_scheduler(bot: Bot, poll_interval: float = 5.0) -> None:
                     if task["task_type"] == "invite_review_due":
                         await _handle_invite_review_due(bot, task)
                     elif task["task_type"] == EXIT_CLEANUP_TASK:
-                        await run_cleanup(bot, int(task["payload_json"]))
+                        raw = task["payload_json"]
+                        if raw and raw.lstrip().startswith("{"):
+                            payload = json.loads(raw)
+                            await run_cleanup(bot, int(payload["id"]), int(payload.get("attempt", 0)))
+                        else:
+                            await run_cleanup(bot, int(raw))
                     elif task["task_type"] == EXIT_REMINDER_TASK:
                         payload = json.loads(task["payload_json"])
                         await run_reminder(bot, int(payload["id"]), int(payload["number"]))
