@@ -20,6 +20,7 @@ async def ensure_schema(db: aiosqlite.Connection) -> None:
             departure_kind TEXT NOT NULL,
             nickname TEXT,
             telegram_name TEXT NOT NULL,
+            telegram_username TEXT,
             join_date TEXT,
             chat_states TEXT NOT NULL DEFAULT '{}',
             game_by INTEGER,
@@ -30,6 +31,9 @@ async def ensure_schema(db: aiosqlite.Connection) -> None:
             explanation_at INTEGER,
             contact_by INTEGER,
             contact_at INTEGER,
+            deferred_by INTEGER,
+            deferred_until INTEGER,
+            reminder_count INTEGER NOT NULL DEFAULT 0,
             message_id INTEGER,
             closed_by INTEGER,
             closed_at INTEGER,
@@ -37,6 +41,11 @@ async def ensure_schema(db: aiosqlite.Connection) -> None:
         );
         CREATE UNIQUE INDEX IF NOT EXISTS uq_open_clan_exit_user
             ON clan_exit_checks(user_id) WHERE status='open';
+        CREATE TABLE IF NOT EXISTS clan_exit_actor_names (
+            user_id INTEGER PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS clan_exit_actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             check_id INTEGER NOT NULL REFERENCES clan_exit_checks(id),
@@ -46,6 +55,34 @@ async def ensure_schema(db: aiosqlite.Connection) -> None:
             created_at INTEGER NOT NULL
         );
     """)
+    columns = {row[1] for row in await (await db.execute("PRAGMA table_info(clan_exit_checks)")).fetchall()}
+    for name, definition in {
+        "telegram_username": "TEXT",
+        "deferred_by": "INTEGER",
+        "deferred_until": "INTEGER",
+        "reminder_count": "INTEGER NOT NULL DEFAULT 0",
+    }.items():
+        if name not in columns:
+            await db.execute(f"ALTER TABLE clan_exit_checks ADD COLUMN {name} {definition}")
+
+
+async def remember_actor(user) -> None:
+    """Persist reviewer name even if they lack a player profile."""
+    if not user:
+        return
+    label = (getattr(user, "full_name", None)
+             or getattr(user, "username", None)
+             or getattr(user, "first_name", None))
+    if not label:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO clan_exit_actor_names(user_id, display_name, updated_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET "
+            "display_name=excluded.display_name, updated_at=excluded.updated_at",
+            (int(user.id), str(label), int(time.time())),
+        )
+        await db.commit()
 
 
 async def actor_labels(user_ids: set[int]) -> dict[int, str]:
@@ -61,17 +98,20 @@ async def actor_labels(user_ids: set[int]) -> dict[int, str]:
                           a.first_name AS admin_first, a.last_name AS admin_last,
                           a.username AS admin_username,
                           c.first_name AS call_first, c.last_name AS call_last,
-                          c.username AS call_username
+                          c.username AS call_username,
+                          n.display_name AS recorded_name
                    FROM (SELECT ? AS user_id) v
                    LEFT JOIN profiles p ON p.user_id=v.user_id
                    LEFT JOIN admins a ON a.user_id=v.user_id
-                   LEFT JOIN call_members c ON c.user_id=v.user_id""",
+                   LEFT JOIN call_members c ON c.user_id=v.user_id
+                   LEFT JOIN clan_exit_actor_names n ON n.user_id=v.user_id""",
                 (user_id,),
             )).fetchone()
             if not row:
                 continue
             name = (
-                row["telegram_full_name"]
+                row["recorded_name"]
+                or row["telegram_full_name"]
                 or " ".join(x for x in (row["admin_first"], row["admin_last"]) if x)
                 or " ".join(x for x in (row["call_first"], row["call_last"]) if x)
                 or (f"@{row['telegram_username']}" if row["telegram_username"] else "")
@@ -100,7 +140,7 @@ async def get_open_for_user(user_id: int) -> dict | None:
 
 
 async def create(user_id: int, kind: str, nickname: str | None, name: str,
-                 join_date: str | None) -> tuple[dict, bool]:
+                 join_date: str | None, telegram_username: str | None = None) -> tuple[dict, bool]:
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("BEGIN IMMEDIATE")
@@ -113,9 +153,10 @@ async def create(user_id: int, kind: str, nickname: str | None, name: str,
         else:
             cursor = await db.execute("""
                 INSERT INTO clan_exit_checks
-                    (user_id, departed_at, departure_kind, nickname, telegram_name, join_date, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, now, kind, nickname, name, join_date, now))
+                    (user_id, departed_at, departure_kind, nickname, telegram_name,
+                     telegram_username, join_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, now, kind, nickname, name, telegram_username, join_date, now))
             check_id, created = cursor.lastrowid, True
             await db.execute("""
                 INSERT INTO clan_exit_actions(check_id, action, detail, created_at)
@@ -131,16 +172,23 @@ async def change(check_id: int, actor_id: int | None, action: str, **values) -> 
     allowed = {
         "status", "chat_states", "game_by", "game_at", "explanation_status",
         "explanation_text", "explanation_by", "explanation_at", "contact_by",
-        "contact_at", "message_id", "closed_by", "closed_at",
+        "contact_at", "deferred_by", "deferred_until", "reminder_count",
+        "message_id", "closed_by", "closed_at",
     }
     if not values or set(values) - allowed:
         raise ValueError("Unsupported exit case update")
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("BEGIN IMMEDIATE")
+        guards = {
+            "game_confirmed": " AND game_at IS NULL",
+            "contact_confirmed": " AND explanation_status='not_requested'",
+            "explanation_unavailable": " AND explanation_status='requested' AND contact_at IS NOT NULL",
+            "explanation_recorded": " AND explanation_status IN ('not_requested', 'requested')",
+        }
         cursor = await db.execute(
             "UPDATE clan_exit_checks SET " + ", ".join(f"{key}=?" for key in values)
-            + ", updated_at=? WHERE id=? AND status='open'",
+            + ", updated_at=? WHERE id=? AND status='open'" + guards.get(action, ""),
             (*values.values(), now, check_id),
         )
         if cursor.rowcount:
@@ -167,5 +215,26 @@ async def open_cases() -> list[dict]:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT * FROM clan_exit_checks WHERE status='open' ORDER BY departed_at"
+        )).fetchall()
+        return [dict(row) for row in rows]
+
+
+async def list_open(limit: int = 30) -> list[dict]:
+    """Open departure cases ordered by oldest departure."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT * FROM clan_exit_checks WHERE status='open' ORDER BY departed_at LIMIT ?",
+            (limit,),
+        )).fetchall()
+        return [dict(row) for row in rows]
+
+
+async def action_history(check_id: int, limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT actor_id, action, created_at FROM clan_exit_actions "
+            "WHERE check_id=? ORDER BY id DESC LIMIT ?", (check_id, limit),
         )).fetchall()
         return [dict(row) for row in rows]
