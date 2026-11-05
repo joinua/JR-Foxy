@@ -70,12 +70,12 @@ class ClanExitTests(unittest.IsolatedAsyncioTestCase):
             "chat_states": json.dumps(states),
         })
         rendered = service.card(case, {2: "Юлія", 3: "Монах"})
-        self.assertIn("У чатах сімейства JR — немає.", rendered)
+        self.assertIn("Чати JR:</b> відсутній(-ня) у всіх", rendered)
         self.assertIn('<a href="tg://user?id=2">Юлія</a>', rendered)
         self.assertIn('<a href="tg://user?id=3">Монах</a>', rendered)
         self.assertNotIn("підтвердив 2", rendered)
         self.assertNotIn("перевірку завершив 3", rendered)
-        self.assertIn("🕹️", rendered)
+        self.assertIn("🎯", rendered)
 
     async def test_no_response_requires_documented_contact_and_wait(self):
         case, _ = await dao.create(42, "вийшов сам", "JRঐTest", "Name", None)
@@ -87,6 +87,59 @@ class ClanExitTests(unittest.IsolatedAsyncioTestCase):
         await dao.change(case["id"], 2, "explanation_unavailable",
                          explanation_status="unavailable", explanation_at=2)
         self.assertIn("пояснення не отримано", service.card(await dao.get(case["id"])))
+
+    async def test_request_contains_reviewer_and_telegram_profile_link(self):
+        case, _ = await dao.create(81, "вийшов сам", "JRঐLink", "Ім'я",
+                                   None, "example_user")
+        await dao.change(case["id"], 2, "contact_confirmed",
+                         contact_by=2, contact_at=100, explanation_status="requested")
+        rendered = service.card(await dao.get(case["id"]), {2: "Юлія"})
+        self.assertIn('href="https://t.me/example_user"', rendered)
+        self.assertIn('<a href="tg://user?id=2">Юлія</a>', rendered)
+        self.assertNotIn("Перевірити повернення", str(service.keyboard(case)))
+
+    async def test_duplicate_game_and_contact_do_not_change_first_reviewer(self):
+        case, _ = await dao.create(91, "вийшов сам", "JRঐTest", "Name", None)
+        self.assertTrue(await dao.change(case["id"], 2, "game_confirmed",
+                                         game_by=2, game_at=11))
+        self.assertFalse(await dao.change(case["id"], 3, "game_confirmed",
+                                          game_by=3, game_at=12))
+        self.assertTrue(await dao.change(case["id"], 2, "contact_confirmed",
+                                         contact_by=2, contact_at=100,
+                                         explanation_status="requested"))
+        self.assertFalse(await dao.change(case["id"], 3, "contact_confirmed",
+                                          contact_by=3, contact_at=200,
+                                          explanation_status="requested"))
+        stored = await dao.get(case["id"])
+        self.assertEqual(stored["game_by"], 2)
+        self.assertEqual(stored["contact_by"], 2)
+        self.assertEqual(stored["contact_at"], 100)
+
+    async def test_recorded_explanation_cannot_be_cleared_by_unavailable(self):
+        case, _ = await dao.create(92, "вийшов сам", "JRঐTest", "Name", None)
+        await dao.change(case["id"], 2, "contact_confirmed",
+                         contact_by=2, contact_at=100, explanation_status="requested")
+        await dao.change(case["id"], 2, "explanation_recorded",
+                         explanation_status="explained", explanation_text="Змінив роботу",
+                         explanation_by=2, explanation_at=120)
+        self.assertFalse(await dao.change(case["id"], 3, "explanation_unavailable",
+                                          explanation_status="unavailable",
+                                          explanation_text=None))
+        stored = await dao.get(case["id"])
+        self.assertEqual(stored["explanation_text"], "Змінив роботу")
+        self.assertNotIn("Пояснення не отримано", str(service.keyboard(stored)))
+
+    async def test_reminder_deferral_does_not_notify_early(self):
+        case, _ = await dao.create(93, "вийшов сам", "JRঐTest", "Name", None)
+        await dao.change(case["id"], 2, "postponed",
+                         deferred_by=2, deferred_until=int(service.time.time()) + 3600)
+        bot = AsyncMock()
+        with patch.object(service, "publish", AsyncMock()), \
+             patch.object(service, "schedule_task", AsyncMock()) as schedule:
+            await service.run_reminder(bot, case["id"], 1)
+        bot.send_message.assert_not_awaited()
+        schedule.assert_awaited_once()
+        self.assertEqual((await dao.get(case["id"]))["reminder_count"], 0)
 
 
 class ClanExitCallbackTests(unittest.IsolatedAsyncioTestCase):
@@ -185,11 +238,19 @@ class ClanExitCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Не вдалося завершити", self.message.answer.await_args.args[0])
         self.assertEqual(self.query.answer.await_count, 1)
 
-    async def test_postpone_remains_open_and_refreshes_card(self):
+    async def test_postpone_menu_persists_due_time_and_actor(self):
         updated = await self.action("later")
         self.assertEqual(updated["status"], "open")
+        self.assertIsNone(updated["deferred_until"])
+        self.bot.edit_message_reply_markup.assert_awaited_once()
+        self.assertIn("24 год", str(self.bot.edit_message_reply_markup.await_args.kwargs["reply_markup"]))
+        self.query.answer.reset_mock()
+        updated = await self.action("defer24")
+        self.assertGreater(updated["deferred_until"], 0)
+        self.assertEqual(updated["deferred_by"], 2)
+        self.assertEqual(updated["status"], "open")
         self.bot.edit_message_text.assert_awaited_once()
-        self.assertIn("лишається відкритою", self.message.answer.await_args.args[0])
+        self.assertIn("відкладено до", self.message.answer.await_args.args[0])
 
     async def test_explanation_prompt_acknowledged_before_fsm_change(self):
         async def set_state(*args):
@@ -214,19 +275,19 @@ class ClanExitCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated["explanation_status"], "unavailable")
         self.assertIn("пояснення не отримано", self.bot.edit_message_text.await_args.kwargs["text"])
 
-    async def test_return_closes_card_and_removes_keyboard(self):
+    async def test_refresh_closes_returned_case_and_removes_keyboard(self):
         self.bot.get_chat_member.side_effect = None
         self.bot.get_chat_member.return_value = SimpleNamespace(status="member")
-        updated = await self.action("return")
+        updated = await self.action("refresh")
         self.assertEqual(updated["status"], "returned")
         self.assertEqual(updated["closed_by"], 2)
         self.assertIsNone(self.bot.edit_message_text.await_args.kwargs["reply_markup"])
         self.bot.unban_chat_member.assert_not_awaited()
 
-    async def test_unconfirmed_return_notifies_without_closing(self):
-        updated = await self.action("return")
+    async def test_still_absent_keeps_case_open(self):
+        updated = await self.action("refresh")
         self.assertEqual(updated["status"], "open")
-        self.assertIn("не підтверджено", self.message.answer.await_args.args[0])
+        self.assertEqual(json.loads(updated["chat_states"])[str(service.MAIN_CHAT_ID)], "немає")
 
     async def prepare_finish(self):
         await self.action("game")
@@ -353,7 +414,7 @@ class ClanExitCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.bot.get_chat_member.return_value = SimpleNamespace(status="member")
         self.bot.edit_message_text.side_effect = RuntimeError("Telegram unavailable")
         with self.assertLogs(self.handler.logger, level="ERROR"):
-            updated = await self.action("return")
+            updated = await self.action("refresh")
         self.assertEqual(updated["status"], "returned")
         self.query.answer.reset_mock()
         self.bot.edit_message_text.side_effect = None
